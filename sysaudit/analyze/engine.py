@@ -53,11 +53,25 @@ def score(findings: list[Finding]) -> int:
     return max(0, 100 - pen)
 
 
+def global_score(findings: list[Finding], scores: dict[str, int]) -> int:
+    """Moyenne des domaines réellement contrôlés, plafonnée par le problème le plus
+    grave : un critique laisse au plus 49 (« préoccupant »), un majeur au plus 84.
+    (L'ancienne formule cumulait les pénalités de tous les domaines : 8/100 pour un
+    serveur dont trois domaines sur quatre étaient corrects.)"""
+    used = [scores[d] for d in DOMAINS if any(f.domain == d for f in findings)]
+    sc = round(sum(used) / len(used)) if used else 100
+    if any(f.severity == CRIT for f in findings):
+        sc = min(sc, 49)
+    elif any(f.severity == MAJOR for f in findings):
+        sc = min(sc, 84)
+    return sc
+
+
 def machine_info(c: Ctx) -> dict:
     o, cs = c.os, c.cs
     bios = c.get("system", "bios") or {}
     cpu = (c.lst("system", "cpu") or [{}])[0]
-    disks = [f"{d.get('name')} ({human_bytes(d.get('size'))}, {d.get('media')})" for d in c.lst("disks", "physical")]
+    disks = [f"{d.get('name')} ({human_bytes(d.get('size'))}" + (f", {d.get('media')}" if d.get("media") not in (None, "", "Unspecified") else "") + ")" for d in c.lst("disks", "physical")]
     ips = []
     for i in c.lst("network", "ip"):
         ips += [a.split("/")[0] for a in i.get("ipv4") or [] if a and not a.startswith("169.254")]
@@ -113,5 +127,5 @@ def analyze(snapshot: dict) -> Analysis:
             best[f.id] = f
     findings = list(best.values())
     scores = {d: score([f for f in findings if f.domain == d]) for d in DOMAINS}
-    scores["global"] = score(findings)
+    scores["global"] = global_score(findings, scores)
     return Analysis(findings, scores, machine_info(c), errors)

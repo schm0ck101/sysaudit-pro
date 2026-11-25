@@ -37,6 +37,9 @@ class Store:
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA foreign_keys=ON")
         self.db.executescript(SCHEMA)
+        cols = {r[1] for r in self.db.execute("PRAGMA table_info(analyses)")}
+        if "followup" not in cols:          # base créée avant le suivi des constats (1.0.9 et avant)
+            self.db.execute("ALTER TABLE analyses ADD COLUMN followup TEXT")
         self.db.commit()
 
     def close(self):
@@ -88,6 +91,19 @@ class Store:
                              json.dumps(analysis.to_dict(), ensure_ascii=False), aid))
             self.db.commit()
 
+    def set_followup(self, aid: int, finding_id: str, entry: dict | None) -> dict:
+        """Enregistre le suivi d'un constat (None = retour à « À faire ») ; renvoie le suivi complet."""
+        with self._lock:
+            r = self.db.execute("SELECT followup FROM analyses WHERE id=?", (aid,)).fetchone()
+            fu = json.loads((r[0] if r else None) or "{}")
+            if entry and (entry.get("status") not in (None, "todo") or entry.get("note")):
+                fu[finding_id] = entry
+            else:
+                fu.pop(finding_id, None)
+            self.db.execute("UPDATE analyses SET followup=? WHERE id=?", (json.dumps(fu, ensure_ascii=False), aid))
+            self.db.commit()
+            return fu
+
     def list(self, client: str | None = None, search: str = "") -> list[dict]:
         q = ("SELECT a.id, a.ts, a.machine, a.role, a.os, a.score, a.counts, a.site, a.notes, a.machine_key, c.name AS client "
              "FROM analyses a LEFT JOIN clients c ON c.id = a.client_id")
@@ -118,6 +134,7 @@ class Store:
         d = dict(r)
         d["analysis"] = json.loads(d["analysis"])
         d["scores"] = json.loads(d["scores"] or "{}")
+        d["followup"] = json.loads(d.get("followup") or "{}")
         d["snapshot"] = json.loads(zlib.decompress(d["snapshot"]).decode("utf-8")) if d["snapshot"] else {}
         return d
 

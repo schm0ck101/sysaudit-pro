@@ -138,7 +138,7 @@ def updates(c: Ctx):
         up = c.uptime_days or 0
         c.add(Finding("os.pending_reboot", SYS, MAJOR if up > 14 else MINOR, "Redémarrage en attente",
                       detail=f"Un redémarrage est nécessaire pour terminer des installations ({sjoin(', ', pr)}) ; "
-                             f"poste allumé depuis {up:.0f} jour(s).".replace(".", ","),
+                             f"{'serveur' if c.is_server else 'poste'} allumé depuis {up:.0f} jour(s).",
                       impact="Des correctifs installés ne sont pas encore actifs ; d'autres installations peuvent échouer.",
                       fix="Redémarrer le poste (planifier une fenêtre de maintenance pour un serveur)."))
 

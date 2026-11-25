@@ -158,8 +158,8 @@ def test_storage_spaces_and_raid():
 
 def test_old_analysis_without_new_domain_still_renders(tmp_path):
     """Une analyse enregistrée avant l'ajout du domaine « Rôles et sauvegardes » reste exportable."""
-    from PySide6.QtGui import QGuiApplication
-    app = QGuiApplication.instance() or QGuiApplication(["t"])  # noqa: F841
+    from PySide6.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication(["t"])  # noqa: F841
     from sysaudit import report
     from sysaudit.config import Settings
     a = analyze(healthy())

@@ -1,8 +1,9 @@
 """Rapport client PDF (Qt, sans dépendance externe) et export JSON.
 
-Structure : page de garde (dessinée) · synthèse (notes, chiffres clés, priorités,
-risques à venir) · constats détaillés par domaine · points conformes · points
-non vérifiés · fiche du poste · méthodologie. Chaque page de contenu porte un
+Structure : page de garde (dessinée) · synthèse (notes, chiffres clés) · plan
+d'action (UN tableau, une ligne par problème, case à cocher et suivi) · pour
+information · points conformes · points non vérifiés · fiche du poste ·
+méthodologie. Chaque page de contenu porte un
 en-tête (logo, poste, client) et un pied de page numéroté.
 """
 from __future__ import annotations
@@ -15,6 +16,7 @@ from pathlib import Path
 from .analyze.engine import Analysis
 from .analyze.model import sjoin, CRIT, DOMAINS, INFO, MAJOR, MINOR, NOT_CHECKED, OK, SEVERITY
 from .config import APP_NAME, APP_VERSION, AUTHOR, AUTHOR_URL
+from .followup import color as fu_color, is_closed, label as fu_label
 
 SEV_COLOR = {CRIT: "#c92a2a", MAJOR: "#e8590c", MINOR: "#d49a00", INFO: "#5b6879", OK: "#2b8a3e", NOT_CHECKED: "#868e96"}
 SEV_TINT = {CRIT: "#fdf0f0", MAJOR: "#fef4ec", MINOR: "#fdf8e8", INFO: "#f3f5f8", OK: "#eef7f0", NOT_CHECKED: "#f3f5f8"}
@@ -23,6 +25,7 @@ ACCENT = "#f47c48"      # orange SCHMOCK
 INK = "#1d2733"
 MUTED = "#5b6879"
 LINE = "#e3e8ee"
+DOMAIN_SHORT = {"hw": "Matériel", "sys": "Système", "sec": "Sécurité", "svc": "Rôles et sauvegardes"}
 
 
 def _e(s) -> str:
@@ -143,10 +146,12 @@ CSS = f"""
   .ev {{ font-family: 'Consolas'; font-size: 7.5pt; color: #6b7785; }}
   table.grid td {{ padding: 5px 8px; border-bottom: 1px solid {LINE}; vertical-align: top; }}
   td.lbl {{ color: {MUTED}; }}
+  table.plan th {{ font-size: 7.5pt; color: {MUTED}; font-weight: 600; padding: 4px 6px; border-bottom: 1.5px solid {NAVY}; }}
+  table.plan td {{ padding: 6px 6px; border-bottom: 1px solid {LINE}; vertical-align: top; }}
 """
 
 
-def _section(num: int, title: str, right: str = "", page_break: bool = True) -> str:
+def _section(num: int, title: str, right: str = "", page_break: bool = False) -> str:
     """Titre de section (numéro, titre, note éventuelle à droite, filet) : un seul bloc
     de premier niveau pour que _keep_together le garde avec la suite."""
     pb = "page-break-before: always; " if page_break else ""
@@ -159,6 +164,15 @@ def _section(num: int, title: str, right: str = "", page_break: bool = True) -> 
             f"</td></tr></table>")
 
 
+H3_MARK = "\u2060"   # caractère invisible : repère des intertitres pour _keep_together
+
+
+def _h3(title: str) -> str:
+    """Intertitre dans son propre cadre, pour ne jamais rester seul en bas de page."""
+    return (f"<table width='100%' cellspacing='0' cellpadding='0' style='margin-top:16px'><tr><td>"
+            f"<p style='font-size:11pt; color:{NAVY}; font-weight:600; margin-bottom:6px'>{H3_MARK}{_e(title)}</p></td></tr></table>")
+
+
 def _keep_together(doc, page_h: float, min_gap: float) -> None:
     """QTextDocument ne gère pas « page-break-inside: avoid » : une fiche coupée en bas
     de page (ou un titre seul en bas de page) est renvoyée en haut de la page suivante."""
@@ -167,23 +181,40 @@ def _keep_together(doc, page_h: float, min_gap: float) -> None:
     from PySide6.QtGui import QTextFormat
 
     lay = doc.documentLayout()
+    brk = QTextFormat.PageBreak_AlwaysBefore
+
+    def is_heading(fr) -> bool:
+        inner = fr.childFrames()
+        txt = fr.firstCursorPosition().block().text() or (inner[0].firstCursorPosition().block().text() if inner else "")
+        return bool((txt or "").startswith(H3_MARK) or re.match(r"^\d\d\W", txt or ""))
+
+    def set_break(fr, on: bool):
+        fmt = fr.frameFormat()
+        fmt.setPageBreakPolicy(brk if on else QTextFormat.PageBreak_Auto)
+        fr.setFrameFormat(fmt)
+
     for _ in range(300):
         lay.documentSize()   # force la mise en page
         changed = False
-        for fr in doc.rootFrame().childFrames():
+        frames = doc.rootFrame().childFrames()
+        for i, fr in enumerate(frames):
             r = lay.frameBoundingRect(fr)
-            fmt = fr.frameFormat()
-            if r.height() > page_h * 0.6 or fmt.pageBreakPolicy() & QTextFormat.PageBreak_AlwaysBefore:
+            has_break = bool(fr.frameFormat().pageBreakPolicy() & brk)
+            if has_break:
+                # titre resté seul en bas de la page précédente : il part avec ce qui le suit
+                if i and is_heading(frames[i - 1]) and not frames[i - 1].frameFormat().pageBreakPolicy() & brk:
+                    pr = lay.frameBoundingRect(frames[i - 1])
+                    if pr.top() % page_h >= 1 and int(pr.top() // page_h) < int(r.top() // page_h):
+                        set_break(frames[i - 1], True)
+                        set_break(fr, False)
+                        changed = True
+                        break
+                continue
+            if r.height() > page_h * 0.6 or r.top() % page_h < 1:   # trop grand, ou déjà en haut de page
                 continue
             first, last = int(r.top() // page_h), int((r.bottom() - 1) // page_h)
-            inner = fr.childFrames()
-            txt = fr.firstCursorPosition().block().text() or (inner[0].firstCursorPosition().block().text() if inner else "")
-            heading = re.match(r"^\d\d ", txt or "")
-            if r.top() % page_h < 1:   # déjà en haut de page
-                continue
-            if first != last or (heading and (first + 1) * page_h - r.bottom() < min_gap):
-                fmt.setPageBreakPolicy(QTextFormat.PageBreak_AlwaysBefore)
-                fr.setFrameFormat(fmt)
+            if first != last or (is_heading(fr) and (first + 1) * page_h - r.bottom() < min_gap):
+                set_break(fr, True)
                 changed = True
                 break
         if not changed:
@@ -193,33 +224,6 @@ def _keep_together(doc, page_h: float, min_gap: float) -> None:
 def _pill(text: str, bg: str, fg: str = "#ffffff") -> str:
     return (f"<span style='background-color:{bg}; color:{fg}; font-size:7.5pt; font-weight:600'>"
             f"&nbsp;&nbsp;{_e(text.upper())}&nbsp;&nbsp;</span>")
-
-
-def _card(f) -> str:
-    col = SEV_COLOR[f.severity]
-    pills = _pill(SEVERITY[f.severity], col)
-    if f.predictive:
-        pills += "&nbsp;&nbsp;" + _pill("Risque à venir", "#fff1cc", "#8a5a00")
-    rows = []
-    if f.impact:
-        rows.append(("Risque", "#8a5a00", f.impact))
-    if f.fix:
-        rows.append(("Action", "#1d6b3a", f.fix))
-    sub = ""
-    if rows:
-        sub = ("<table cellspacing='0' cellpadding='0' width='100%' style='margin-top:6px'>"
-               + "".join(f"<tr><td width='54' style='color:{c}; font-weight:600; padding:2px 0'>{lbl}</td>"
-                         f"<td style='padding:2px 0'>{_e(t)}</td></tr>" for lbl, c, t in rows)
-               + "</table>")
-    ev = [x for x in f.evidence if x]
-    evh = ("<p class='ev' style='margin-top:6px'>" + "<br>".join(_e(x) for x in ev[:4]) + "</p>") if ev else ""
-    det = f"<p style='margin-top:3px; color:#3a4656'>{_e(f.detail)}</p>" if f.detail else ""
-    return (f"<table width='100%' cellspacing='0' cellpadding='0' style='margin-top:10px'><tr>"
-            f"<td width='4' bgcolor='{col}'></td>"
-            f"<td bgcolor='#f7f9fc' style='padding:9px 12px 10px 12px'>"
-            f"<p>{pills}</p>"
-            f"<p style='margin-top:5px; font-size:10.5pt; font-weight:600; color:{NAVY}'>{_e(f.title)}</p>"
-            f"{det}{sub}{evh}</td></tr></table>")
 
 
 def _build_html(rec: dict, analysis: Analysis, rep: dict, prev: Analysis | None, add_img) -> str:
@@ -234,7 +238,6 @@ def _build_html(rec: dict, analysis: Analysis, rep: dict, prev: Analysis | None,
     n += 1
     h.append(f"<p style='font-size:10pt'>Note globale <b style='color:{score_color(sc)}'>{sc} / 100</b> — "
              f"<span style='color:{score_color(sc)}'>{verdict(sc)}</span>.</p>")
-    h.append(f"<p style='margin-top:8px' align='center'><img src='{add_img(_domain_rings_image(analysis))}' width='{min(640, 190 * len(_domains(analysis)))}'></p>")
     risks = analysis.risks
     kpis = [(counts[CRIT], "critique" if counts[CRIT] <= 1 else "critiques", SEV_COLOR[CRIT], SEV_TINT[CRIT]),
             (counts[MAJOR], "majeur" if counts[MAJOR] <= 1 else "majeurs", SEV_COLOR[MAJOR], SEV_TINT[MAJOR]),
@@ -247,44 +250,12 @@ def _build_html(rec: dict, analysis: Analysis, rep: dict, prev: Analysis | None,
                  f"<p style='font-size:8.5pt; color:{MUTED}'>{lbl}</p></td>")
     h.append("</tr></table>")
 
-    probs = analysis.problems
-    if not probs:
-        h.append(f"<p style='margin-top:14px; color:{SEV_COLOR[OK]}; font-size:10.5pt'><b>✓ Aucun problème détecté sur les points contrôlés.</b></p>")
-    else:
-        # constats demandant la même action regroupés (ex. 7 partages ouverts à « Tout le monde »)
-        groups: dict = {}
-        for f in [f for f in probs if f.severity >= MAJOR] or probs:
-            groups.setdefault((f.fix or f.id), []).append(f)
-        top = list(groups.values())[:10]
-        h.append("<h3>Priorités d'intervention</h3>")
-        h.append("<table width='100%' cellspacing='0' cellpadding='0'>")
-        for i, grp in enumerate(top, 1):
-            f = grp[0]
-            more = (f"<span style='color:{MUTED}'> — et {_plural(len(grp) - 1, 'autre constat', 'autres constats')} du même type</span>"
-                    if len(grp) > 1 else "")
-            h.append(f"<tr><td width='34' valign='top' style='padding:7px 0; border-bottom:1px solid {LINE}'>"
-                     f"<span style='font-size:14pt; font-weight:700; color:#c3cbd6'>{i}</span></td>"
-                     f"<td valign='top' style='padding:7px 0; border-bottom:1px solid {LINE}'>"
-                     f"<p>{_pill(SEVERITY[f.severity], SEV_COLOR[f.severity])}&nbsp;&nbsp;<b style='color:{NAVY}'>{_e(f.title)}</b>{more}</p>"
-                     + (f"<p style='margin-top:3px; color:#3a4656'><span style='color:#1d6b3a; font-weight:600'>→</span> {_e(f.fix)}</p>" if f.fix else "")
-                     + "</td></tr>")
-        h.append("</table>")
-    if risks:
-        h.append("<h3>Risques à venir</h3>")
-        h.append("<table width='100%' cellspacing='0' cellpadding='0'><tr><td width='4' bgcolor='#e0a800'></td>"
-                 "<td bgcolor='#fff8e1' style='padding:9px 12px'>"
-                 "<p class='muted' style='margin-bottom:4px'>Ils ne bloquent pas encore le poste mais annoncent une panne, "
-                 "une saturation ou une faille si rien n'est fait.</p>")
-        for f in risks:
-            h.append(f"<p style='margin-top:4px'><b style='color:{SEV_COLOR[f.severity]}'>■</b>&nbsp; <b>{_e(f.title)}</b>"
-                     + (f" <span style='color:#3a4656'>— {_e(f.impact)}</span>" if f.impact else "") + "</p>")
-        h.append("</td></tr></table>")
     if prev:
         new, solved = diff(analysis, prev)
         ps = int(prev.scores.get("global", 0))
         delta = sc - ps
         dcol = "#2b8a3e" if delta > 0 else "#c92a2a" if delta < 0 else MUTED
-        h.append("<h3>Évolution depuis l'analyse précédente</h3>")
+        h.append(_h3("Évolution depuis l'analyse précédente"))
         h.append(f"<p>Note : {ps} → <b>{sc} / 100</b> <b style='color:{dcol}'>({delta:+d})</b> · "
                  f"{_plural(len(solved), 'problème résolu', 'problèmes résolus')} · {_plural(len(new), 'nouveau', 'nouveaux')}</p>")
         if solved:
@@ -294,20 +265,59 @@ def _build_html(rec: dict, analysis: Analysis, rep: dict, prev: Analysis | None,
             h.append(f"<p class='small' style='margin-top:4px'><b style='color:#c92a2a'>Nouveaux :</b> "
                      + "; ".join(_e(f.title) for f in new[:15]) + "</p>")
 
-    # ------------------------------------------------------------- détails
-    for d, label in DOMAINS.items():
-        fs = sorted((f for f in analysis.findings if f.domain == d and f.severity >= INFO), key=lambda f: (-f.severity, f.title))
-        if not fs:
-            continue
-        s = int(analysis.scores.get(d, 0))
-        right = f"<span style='font-size:13pt; font-weight:700; color:{score_color(s)}'>{s}</span><span class='muted'> / 100</span>"
-        h.append(_section(n, label, right))
+    # ------------------------------------------------------- plan d'action
+    # un seul tableau, une ligne par problème : on coche, on note l'échéance
+    fus = rec.get("followup") or {}
+    probs = sorted(analysis.problems, key=lambda f: (-f.severity, f.domain, f.title))
+    infos = sorted((f for f in analysis.findings if f.severity == INFO), key=lambda f: (f.domain, f.title))
+    if not probs:
+        h.append(f"<p style='margin-top:14px; color:{SEV_COLOR[OK]}; font-size:10.5pt'><b>✓ Aucun problème détecté sur les points contrôlés.</b></p>")
+    else:
+        h.append(_section(n, "Plan d'action"))
         n += 1
-        nb = sum(1 for f in fs if f.severity >= MINOR)
-        h.append(f"<p class='muted'>{_plural(nb, 'problème relevé', 'problèmes relevés')}"
-                 + (f", {_plural(len(fs) - nb, 'information', 'informations')}" if len(fs) > nb else "") + ".</p>")
-        for f in fs:
-            h.append(_card(f))
+        closed = sum(1 for f in probs if is_closed(fus.get(f.id)))
+        planned = sum(1 for f in probs if (fus.get(f.id) or {}).get("status") == "planned")
+        h.append(f"<p class='muted'>{_plural(len(probs), 'point à traiter', 'points à traiter')}, du plus urgent au moins urgent"
+                 + (f" · suivi au {time.strftime('%d/%m/%Y')} : {closed} traité(s)" + (f", {planned} prévu(s)" if planned else "") if fus else "")
+                 + ". ⚠ = risque à venir.</p>")
+        h.append("<table width='100%' cellspacing='0' cellpadding='0' class='plan' style='margin-top:8px'><thead><tr>"
+                 "<th width='4%'></th><th width='11%' align='left'>Gravité</th><th width='40%' align='left'>Problème constaté</th>"
+                 "<th width='31%' align='left'>Action à mener</th><th width='14%' align='left'>Suivi</th></tr></thead>")
+        for f in probs:
+            fu = fus.get(f.id)
+            done = (fu or {}).get("status") == "done"
+            shut = is_closed(fu)
+            ink = "#9aa5b1" if shut else INK
+            box = (f"<span style='font-size:12pt; color:{SEV_COLOR[OK]}'>☑</span>" if done
+                   else f"<span style='font-size:12pt; color:#8a96a6'>☐</span>")
+            det = (f.detail or "").strip()
+            if len(det) > 150:
+                det = det[:147].rsplit(" ", 1)[0] + "…"
+            dom = DOMAIN_SHORT.get(f.domain, DOMAINS.get(f.domain, ""))
+            st = fu_label(fu) if fu else ""
+            stc = fu_color(fu) or MUTED
+            note = (fu or {}).get("note") or ""
+            h.append(
+                f"<tr><td align='center'>{box}</td>"
+                f"<td>{_pill(SEVERITY[f.severity], '#b9c1cb' if shut else SEV_COLOR[f.severity])}</td>"
+                f"<td><p style='color:{ink}; font-weight:600'>{'⚠ ' if f.predictive else ''}{_e(f.title)}</p>"
+                f"<p class='small' style='color:{'#b0b8c2' if shut else MUTED}'>{_e(dom)}{(' · ' + _e(det)) if det else ''}</p></td>"
+                f"<td class='small' style='color:{'#9aa5b1' if shut else '#2d3a48'}'>{_e(f.fix)}</td>"
+                f"<td class='small'><p style='color:{stc}; font-weight:600'>{_e(st)}</p>"
+                + (f"<p style='color:{MUTED}'>{_e(note)}</p>" if note else "")
+                + "</td></tr>")
+        h.append("</table>")
+    if infos:
+        h.append(_h3("Pour information"))
+        h.append("<table width='100%' cellspacing='0' cellpadding='0' class='grid'>")
+        for f in infos:
+            det = (f.detail or "").strip()
+            if len(det) > 180:
+                det = det[:177].rsplit(" ", 1)[0] + "…"
+            h.append(f"<tr><td width='22' style='color:{MUTED}'>i</td><td><b>{_e(f.title)}</b>"
+                     + (f"<br><span class='muted'>{_e(det)}</span>" if det else "")
+                     + f"</td><td width='22%' class='lbl' align='right'>{_e(DOMAINS.get(f.domain, ''))}</td></tr>")
+        h.append("</table>")
 
     # --------------------------------------------------- conformes / non vérifiés
     oks = sorted((f for f in analysis.findings if f.severity == OK), key=lambda f: (f.domain, f.title))
@@ -351,7 +361,7 @@ def _build_html(rec: dict, analysis: Analysis, rep: dict, prev: Analysis | None,
             h.append(f"<tr{bg}><td class='lbl' width='30%'>{_e(k)}</td><td>{_e(v) or '—'}</td></tr>")
         h.append("</table>")
     if rec.get("notes"):
-        h.append("<h3>Notes de l'intervenant</h3>"
+        h.append(_h3("Notes de l'intervenant") +
                  f"<table width='100%' cellspacing='0' cellpadding='0'><tr><td width='4' bgcolor='{NAVY}'></td>"
                  f"<td bgcolor='#f7f9fc' style='padding:9px 12px'><p>{_e(rec['notes']).replace(chr(10), '<br>')}</p></td></tr></table>")
 

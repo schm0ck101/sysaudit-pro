@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter
+from datetime import timedelta
 from statistics import mean
 
 from .context import DENIED, Ctx
@@ -133,12 +134,22 @@ def crashes(c: Ctx):
                       impact="Perte du travail en cours ; causes fréquentes : pilote défectueux, mémoire vive ou disque défaillants, surchauffe.",
                       fix="Analyser les vidages (code d'arrêt), mettre à jour les pilotes et le BIOS, tester la mémoire (mdsched.exe).",
                       evidence=ev, predictive=n >= 2))
-    kp = c.events("Microsoft-Windows-Kernel-Power", {41}) + c.events("EventLog", {6008})
-    n = c.count_since(kp, 30)
+    k41, k6008 = c.events("Microsoft-Windows-Kernel-Power", {41}), c.events("EventLog", {6008})
+    # un même arrêt brutal produit en général les deux événements : on garde le plus grand des deux comptes
+    n = max(c.count_since(k41, 30), c.count_since(k6008, 30))
+    kp = k41 if c.count_since(k41, 30) >= c.count_since(k6008, 30) else k6008
+    days = {}
+    for g in kp:
+        for d, k in (g.get("days") or {}).items():
+            days[d] = days.get(d, 0) + int(k)
+    lim = (c.now - timedelta(days=30)).date().isoformat()
+    dates = [f"{d[8:10]}/{d[5:7]}" + (f" ({k}×)" if k > 1 else "") for d, k in sorted(days.items()) if d >= lim]
+    who = "du serveur" if c.is_server else "du poste"
     if n:
         sev = MAJOR if n >= 3 else MINOR
-        c.add(Finding("stab.unexpected_shutdown", HW, sev, f"Arrêts brutaux du poste : {n} sur 30 jours",
-                      detail=f"Windows a redémarré {n} fois sans arrêt propre (Kernel-Power 41 / EventLog 6008).",
+        c.add(Finding("stab.unexpected_shutdown", HW, sev, f"Arrêts brutaux {who} : {n} sur 30 jours",
+                      detail=f"Windows a redémarré {n} fois sans arrêt propre (Kernel-Power 41 / EventLog 6008). "
+                             f"Dates : {', '.join(dates[-12:])}.",
                       impact="Risque de corruption des données ; causes : coupure de courant, alimentation ou batterie faible, "
                              "surchauffe, plantage matériel, arrêt forcé par l'utilisateur.",
                       fix="Vérifier l'alimentation (onduleur pour un serveur), la température, et interroger l'utilisateur sur des arrêts forcés.",

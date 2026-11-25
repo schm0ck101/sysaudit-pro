@@ -494,6 +494,20 @@ def iis(c: Ctx):
 
 
 # ---------------------------------------------------------------- sauvegardes
+def _backup_products(names) -> list[str]:
+    """Regroupe les composants d'un même éditeur (plug-ins, consoles, explorateurs, services)."""
+    out: dict[str, str] = {}
+    for n in sorted(names):
+        m = BACKUP_SW.search(n)
+        key = m.group(0).lower() if m else n.lower()
+        short = re.sub(r"\s*\(.*?\)|\s+v?\d[\d.]*$", "", n).strip()
+        noisy = re.search(r"plug-?in|explorer|console|extract|redistributable|mount|transport|catalog|\bservice\b|"
+                          r"agent for|\bapi\b|proxy|installer|data analyzer", short, re.I)
+        if key not in out or (not noisy and (out[key] is None or len(short) < len(out[key]))):
+            out[key] = None if noisy else short
+    return [v or k.title() for k, v in out.items()][:6]
+
+
 def backups(c: Ctx):
     if not c.section("backup"):
         return
@@ -533,7 +547,7 @@ def backups(c: Ctx):
         found.add("Veeam")
         ev = sorted(ve, key=lambda e: e.get("date") or "")
         last = ev[-1]
-        succ = [e for e in ev if int(e.get("level") or 4) in (0, 4)]
+        succ = [e for e in ev if int(e.get("level") or 4) in (0, 3, 4)]
         age = _age(c, succ[-1].get("date")) if succ else None
         if int(last.get("level") or 4) in (1, 2):
             c.add(Finding("bk.veeam.failed", SVC, MAJOR, "Dernier travail de sauvegarde Veeam en échec",
@@ -545,6 +559,8 @@ def backups(c: Ctx):
                           fix="Vérifier la configuration des travaux et la destination de sauvegarde."))
         elif age > 2:
             c.add(Finding("bk.veeam.age", SVC, CRIT if age > 7 else MAJOR, f"Dernière sauvegarde Veeam réussie il y a {age} jours",
+                          detail=f"Dernier travail terminé (événement 190) le {fr_date(parse_dt(last.get('date')))} : "
+                                 f"{(last.get('message') or '').strip()[:160]}",
                           impact=f"Toutes les modifications des {age} derniers jours seraient perdues en cas de sinistre.",
                           fix="Vérifier la planification et l'état des travaux dans la console Veeam."))
         else:
@@ -554,7 +570,7 @@ def backups(c: Ctx):
     n = c.count_since(groups, 14)
     if n:
         provs = sorted({g.get("provider") for g in groups})
-        c.add(Finding("bk.errors", SVC, MAJOR, f"Erreurs du logiciel de sauvegarde sur 14 jours : {n}",
+        c.add(Finding("bk.errors", SVC, MAJOR if n >= 3 else MINOR, f"Erreurs du logiciel de sauvegarde sur 14 jours : {n}",
                       detail="Source(s) : " + ", ".join(provs) + ".", evidence=_events_text(groups),
                       impact="Des sauvegardes échouent peut-être sans que personne ne s'en aperçoive.",
                       fix="Vérifier le rapport du dernier travail dans la console du logiciel de sauvegarde."))
@@ -578,7 +594,7 @@ def backups(c: Ctx):
             c.add(Finding("bk.none", SVC, INFO, "Aucun logiciel de sauvegarde détecté sur ce poste",
                           detail="Les données sont peut-être sauvegardées ailleurs (OneDrive, serveur de fichiers) : à confirmer avec l'utilisateur."))
     else:
-        c.add(Finding("bk.info", SVC, INFO, "Solution(s) de sauvegarde détectée(s) : " + ", ".join(sorted(found))[:200]))
+        c.add(Finding("bk.info", SVC, INFO, "Solution(s) de sauvegarde détectée(s) : " + ", ".join(_backup_products(found))))
     # --- clichés instantanés (versions précédentes) des volumes partagés
     if c.is_server:
         shares = c.lst("security", "shares")
