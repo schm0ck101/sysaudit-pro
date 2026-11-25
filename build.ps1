@@ -4,7 +4,7 @@
 #   3. icône
 #   4. exécutable (PyInstaller) -> build\app\SysAuditPro\SysAuditPro.exe (interne, utilisé par l'installateur)
 #   5. version portable en un seul fichier -> dist\SysAuditPro-Portable.exe
-#   6. installateur (Inno Setup, si présent) -> dist\SysAuditPro-Setup-1.0.0.exe
+#   6. installateur (Inno Setup, si présent) -> dist\SysAuditPro-Setup-1.0.1.exe
 # Utilisation : clic droit > Exécuter avec PowerShell, ou  .\build.ps1 [-SkipTests] [-SkipPortable]
 param([switch]$SkipTests, [switch]$SkipPortable)
 $ErrorActionPreference = "Stop"

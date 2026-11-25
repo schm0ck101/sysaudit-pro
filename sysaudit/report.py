@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 
 from .analyze.engine import Analysis
-from .analyze.model import CRIT, DOMAINS, INFO, MAJOR, MINOR, NOT_CHECKED, OK, SEVERITY
+from .analyze.model import sjoin, CRIT, DOMAINS, INFO, MAJOR, MINOR, NOT_CHECKED, OK, SEVERITY
 from .config import APP_NAME, APP_VERSION, AUTHOR, AUTHOR_URL
 
 SEV_COLOR = {CRIT: "#c92a2a", MAJOR: "#e8590c", MINOR: "#d4a600", INFO: "#5b6879", OK: "#2b8a3e", NOT_CHECKED: "#868e96"}
@@ -178,7 +178,7 @@ def export_pdf(path: str | Path, rec: dict, analysis: Analysis, settings, prev: 
         rows = [("Nom", m.get("name")), ("Domaine / groupe", m.get("domain")), ("Rôle", m.get("role")), ("Système", m.get("os")),
                 ("Version", m.get("build")), ("Installé le", m.get("installed")), ("Fabricant / modèle", f"{m.get('manufacturer')} {m.get('model')}"),
                 ("N° de série", m.get("serial")), ("Processeur", m.get("cpu")), ("Mémoire", m.get("ram")),
-                ("Disques", ", ".join(m.get("disks") or [])), ("Adresses IP", ", ".join(m.get("ips") or [])),
+                ("Disques", sjoin(", ", m.get("disks"))), ("Adresses IP", sjoin(", ", m.get("ips"))),
                 ("Démarré depuis", f"{m.get('uptime_days'):.1f} jour(s)".replace(".", ",") if m.get("uptime_days") is not None else "—"),
                 ("Utilisateur", m.get("user"))]
         h.append(f"<h2 style='page-break-before: always'>{n}. Fiche du poste</h2><table class='grid' width='100%'>")

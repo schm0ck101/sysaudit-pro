@@ -18,7 +18,11 @@ def _excepthook(t, e, tb):
     log.error("Exception non gérée :\n%s", "".join(traceback.format_exception(t, e, tb)))
     from PySide6.QtWidgets import QApplication, QMessageBox
     if QApplication.instance() and threading.current_thread() is threading.main_thread():
-        QMessageBox.warning(None, APP_NAME, f"Erreur inattendue :\n{e}\n\nDétails : {data_dir() / 'sysaudit.log'}")
+        # emplacement précis (3 derniers appels) : suffit au support à partir d'une capture d'écran
+        where = " ← ".join(f"{fr.filename.replace(chr(92), '/').rsplit('/', 1)[-1]}:{fr.lineno} {fr.name}"
+                           for fr in reversed(traceback.extract_tb(tb)[-3:]))
+        QMessageBox.warning(None, APP_NAME, f"Erreur inattendue (version {APP_VERSION}) :\n{e}\n\nEmplacement : {where}"
+                                            f"\n\nDétails : {data_dir() / 'sysaudit.log'}")
 
 
 def cli_collect(out: str, analyse_only: str | None = None) -> int:

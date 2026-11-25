@@ -6,7 +6,7 @@ from collections import Counter
 from statistics import mean
 
 from .context import DENIED, Ctx
-from .model import CRIT, HW, INFO, MAJOR, MINOR, OK, Finding, fr_date, human_bytes, parse_dt
+from .model import sjoin, CRIT, HW, INFO, MAJOR, MINOR, OK, Finding, fr_date, human_bytes, parse_dt
 
 DISK_EVENTS = {
     # (fournisseur, id) : (gravité, intitulé, prédictif)
@@ -35,7 +35,7 @@ def disks(c: Ctx):
             problems += 1
             c.add(Finding(f"disk.health.{d.get('serial') or d.get('id')}", HW, CRIT if health == "unhealthy" or any("fail" in o for o in ops) else MAJOR,
                           f"Disque signalé en mauvais état : {d.get('name')}",
-                          detail=f"Windows indique l'état « {d.get('health')} » ({', '.join(d.get('operational') or [])}) pour {name}.",
+                          detail=f"Windows indique l'état « {d.get('health')} » ({sjoin(', ', d.get('operational'))}) pour {name}.",
                           impact="Le disque risque de tomber en panne et d'entraîner une perte de données.",
                           fix="Sauvegarder immédiatement les données, puis remplacer le disque.", predictive=True))
         rc = d.get("reliability") or {}
@@ -94,7 +94,7 @@ def disks(c: Ctx):
     if ctrl:
         n = c.count(ctrl)
         c.add(Finding("disk.controller", HW, MAJOR if n >= 3 else MINOR, f"Réinitialisations du contrôleur de stockage ({n})",
-                      detail=f"Le pilote de stockage a dû réinitialiser le disque {n} fois ({', '.join(sorted({g['provider'] for g in ctrl}))}).",
+                      detail=f"Le pilote de stockage a dû réinitialiser le disque {n} fois ({sjoin(', ', sorted({g.get('provider') or '?' for g in ctrl}))}).",
                       impact="Gels temporaires du poste, risque de corruption de fichiers ; souvent un disque ou un câble en fin de vie.",
                       fix="Mettre à jour le firmware du SSD et le pilote du contrôleur, contrôler le câble ; si cela persiste, remplacer le disque.",
                       predictive=True))

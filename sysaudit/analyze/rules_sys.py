@@ -8,7 +8,7 @@ from statistics import median
 
 from .context import Ctx
 from .eol import os_life
-from .model import CRIT, INFO, MAJOR, MINOR, OK, SYS, Finding, fr_date, human_bytes, parse_dt
+from .model import sjoin, CRIT, INFO, MAJOR, MINOR, OK, SYS, Finding, fr_date, human_bytes, parse_dt
 
 # services « Automatique » qu'il est normal de trouver arrêtés
 SERVICE_IGNORE = re.compile(
@@ -125,7 +125,7 @@ def updates(c: Ctx):
     if pr:
         up = c.uptime_days or 0
         c.add(Finding("os.pending_reboot", SYS, MAJOR if up > 14 else MINOR, "Redémarrage en attente",
-                      detail=f"Un redémarrage est nécessaire pour terminer des installations ({', '.join(pr)}) ; "
+                      detail=f"Un redémarrage est nécessaire pour terminer des installations ({sjoin(', ', pr)}) ; "
                              f"poste allumé depuis {up:.0f} jour(s).".replace(".", ","),
                       impact="Des correctifs installés ne sont pas encore actifs ; d'autres installations peuvent échouer.",
                       fix="Redémarrer le poste (planifier une fenêtre de maintenance pour un serveur)."))
@@ -376,7 +376,7 @@ def network(c: Ctx):
                           fix="Remplacer le câble (catégorie 5e minimum) et vérifier le port du switch."))
     for ip in c.lst("network", "ip"):
         for a in ip.get("ipv4") or []:
-            if a.startswith("169.254."):
+            if a and a.startswith("169.254."):
                 c.add(Finding(f"net.apipa.{ip.get('alias')}", SYS, MAJOR, f"Pas d'adresse IP valide sur « {ip.get('alias')} »",
                               detail=f"Adresse automatique {a} : aucun serveur DHCP n'a répondu.",
                               impact="Pas d'accès au réseau sur cette interface.", fix="Vérifier le câble, le switch et le serveur DHCP."))

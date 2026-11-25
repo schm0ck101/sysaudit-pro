@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from PySide6.QtWidgets import QHBoxLayout, QLineEdit, QTabWidget, QVBoxLayout, QWidget
 
-from ..analyze.model import as_list, fr_date, human_bytes, parse_dt
+from ..analyze.model import as_list, fr_date, human_bytes, parse_dt, sjoin
 from .common import fill_table, make_table, muted, page_title
 
 
@@ -111,9 +111,9 @@ class InventoryPage(QWidget):
                                                        t.get("exe")] for t in as_list(sw.get("tasks"))])
         ips = {i.get("alias"): i for i in as_list(net.get("ip"))}
         fill_table(self.tables["Réseau"], [[a.get("name"), a.get("description"), a.get("status"), a.get("speed"),
-                                            ", ".join(ips.get(a.get("name"), {}).get("ipv4") or []),
-                                            ", ".join(ips.get(a.get("name"), {}).get("gateway") or []),
-                                            ", ".join(ips.get(a.get("name"), {}).get("dns") or [])] for a in as_list(net.get("adapters"))])
+                                            sjoin(", ", ips.get(a.get("name"), {}).get("ipv4")),
+                                            sjoin(", ", ips.get(a.get("name"), {}).get("gateway")),
+                                            sjoin(", ", ips.get(a.get("name"), {}).get("dns"))] for a in as_list(net.get("adapters"))])
         procs = (sysd.get("processes") or {}).get("top") or []
         fill_table(self.tables["Processus"], [[p.get("name"), (str(p.get("pid")), p.get("pid") or 0),
                                                (human_bytes(p.get("private")), p.get("private") or 0), (str(p.get("handles")), p.get("handles") or 0),

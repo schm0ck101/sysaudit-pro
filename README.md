@@ -23,7 +23,7 @@ risque et l'action à mener. Le résultat est un **rapport PDF client**.
 - **Portable** : `SysAuditPro-Portable.exe`, à copier sur la clé USB
   d'intervention. L'historique des clients est enregistré **à côté de l'exe**,
   dans `SysAuditPro-Donnees\`. Il voyage donc avec la clé.
-- **Installateur** : `SysAuditPro-Setup-1.0.0.exe`. Les données sont alors
+- **Installateur** : `SysAuditPro-Setup-1.0.1.exe`. Les données sont alors
   dans `%APPDATA%\SysAuditPro\`.
 
 Systèmes pris en charge : Windows 10, Windows 11, Windows Server 2016, 2019,

@@ -60,7 +60,7 @@ def machine_info(c: Ctx) -> dict:
     disks = [f"{d.get('name')} ({human_bytes(d.get('size'))}, {d.get('media')})" for d in c.lst("disks", "physical")]
     ips = []
     for i in c.lst("network", "ip"):
-        ips += [a.split("/")[0] for a in i.get("ipv4") or [] if not a.startswith("169.254")]
+        ips += [a.split("/")[0] for a in i.get("ipv4") or [] if a and not a.startswith("169.254")]
     return {
         "name": cs.get("name") or "?",
         "domain": cs.get("domain") or "",

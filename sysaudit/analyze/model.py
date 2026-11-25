@@ -85,6 +85,11 @@ def fr_num(x, dec: int = 0) -> str:
     return s
 
 
+def sjoin(sep: str, items) -> str:
+    """join() tolérant : ignore les valeurs vides (None) renvoyées par Windows."""
+    return sep.join(str(x) for x in (items or []) if x is not None and str(x) != "")
+
+
 def as_list(v) -> list:
     if v is None:
         return []
@@ -100,4 +105,4 @@ def utcnow() -> datetime:
 
 
 __all__ = ["Finding", "DOMAINS", "SEVERITY", "HW", "SYS", "SEC", "NOT_CHECKED", "OK", "INFO", "MINOR", "MAJOR",
-           "CRIT", "parse_dt", "days_between", "human_bytes", "fr_date", "fr_num", "as_list", "utcnow", "timedelta"]
+           "CRIT", "sjoin", "parse_dt", "days_between", "human_bytes", "fr_date", "fr_num", "as_list", "utcnow", "timedelta"]

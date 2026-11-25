@@ -7,7 +7,7 @@ import re
 
 from .context import DENIED, Ctx
 from .eol import REMOTE_ACCESS, SOFTWARE_RULES, version_lt
-from .model import CRIT, INFO, MAJOR, MINOR, OK, SEC, Finding, fr_date, parse_dt
+from .model import sjoin, CRIT, INFO, MAJOR, MINOR, OK, SEC, Finding, fr_date, parse_dt
 
 EVERYONE = {"everyone", "tout le monde", "jeder", "todos", "tutti", "iedereen"}
 AV_SERVICES = re.compile(r"^(SentinelAgent|CSFalconService|ekrn|SAVService|Sophos.*|WRSVC|bdservicehost|EPSecurityService|"
@@ -43,7 +43,7 @@ def antivirus(c: Ctx):
                       fix="Réactiver Microsoft Defender ou installer / réparer la solution antivirus de l'entreprise."))
         return
     if outdated:
-        c.add(Finding("av.outdated", SEC, MAJOR, "Antivirus non à jour : " + ", ".join(outdated),
+        c.add(Finding("av.outdated", SEC, MAJOR, "Antivirus non à jour : " + sjoin(", ", outdated),
                       detail="Le Centre de sécurité Windows signale des signatures obsolètes.",
                       impact="Les menaces récentes ne sont pas détectées.", fix="Forcer la mise à jour de l'antivirus et vérifier son accès à Internet."))
     if def_on:
@@ -75,11 +75,11 @@ def firewall(c: Ctx):
     off = [p["name"] for p in prof if str(p.get("enabled")).lower() not in ("true", "1")]
     third = [p.get("name") for p in c.lst("security", "fw_products")]
     if off and not third:
-        c.add(Finding("fw.off", SEC, CRIT if "Public" in off else MAJOR, "Pare-feu Windows désactivé : profil(s) " + ", ".join(off),
+        c.add(Finding("fw.off", SEC, CRIT if "Public" in off else MAJOR, "Pare-feu Windows désactivé : profil(s) " + sjoin(", ", off),
                       impact="Les services du poste sont exposés à tout le réseau (propagation de rançongiciels, attaques internes).",
                       fix="Réactiver le pare-feu sur tous les profils et créer des règles d'autorisation ciblées si besoin."))
     else:
-        c.add(Finding("fw.ok", SEC, OK, "Pare-feu actif sur tous les profils" if not off else "Pare-feu tiers actif : " + ", ".join(third)))
+        c.add(Finding("fw.ok", SEC, OK, "Pare-feu actif sur tous les profils" if not off else "Pare-feu tiers actif : " + sjoin(", ", third)))
 
 
 def encryption(c: Ctx):
@@ -313,7 +313,7 @@ def certificates(c: Ctx):
         expired = days < 0
         c.add(Finding(f"cert.{cert.get('thumbprint')}", SEC, MAJOR if (expired or days <= 15) else MINOR,
                       f"Certificat « {subj} » " + (f"expiré depuis le {fr_date(end)}" if expired else f"expire dans {days} jours ({fr_date(end)})"),
-                      detail=f"Émetteur : {cert.get('issuer')} ; usages : {', '.join(cert.get('eku') or []) or '—'}.",
+                      detail=f"Émetteur : {cert.get('issuer')} ; usages : {sjoin(', ', cert.get('eku')) or '—'}.",
                       impact="Les services qui l'utilisent (site web, bureau à distance, VPN, Wi‑Fi 802.1X…) afficheront des erreurs ou refuseront les connexions.",
                       fix="Renouveler le certificat et le lier aux services concernés.", predictive=not expired))
 
@@ -367,7 +367,7 @@ def software(c: Ctx):
     exp = [f"{risky[p['port']]} (port {p['port']}, {p.get('process')})" for p in c.lst("network", "listening") if p.get("port") in risky]
     if exp:
         c.add(Finding("net.risky_ports", SEC, MAJOR, "Services non chiffrés à l'écoute sur le réseau",
-                      detail=", ".join(exp), impact="Identifiants et données circulent en clair, protocoles souvent sans protection contre la force brute.",
+                      detail=sjoin(", ", exp), impact="Identifiants et données circulent en clair, protocoles souvent sans protection contre la force brute.",
                       fix="Désactiver ces services ou les remplacer par des équivalents chiffrés (SFTP, SSH, RDP avec NLA)."))
     hosts = c.lst("network", "hosts")
     sus = [h for h in hosts if re.search(r"microsoft|windowsupdate|defender|kaspersky|eset|sophos|avast|bitdefender|norton|mcafee|"
