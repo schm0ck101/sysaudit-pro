@@ -165,7 +165,7 @@ def crashes(c: Ctx):
                       impact="Performances fortement réduites ; une surchauffe prolongée réduit la durée de vie du matériel.",
                       fix="Dépoussiérer, vérifier les ventilateurs et la pâte thermique, contrôler l'alimentation électrique.",
                       predictive=True))
-    for t in c.lst("system", "thermal"):
+    for t in c.lst("perf", "thermal") or c.lst("system", "thermal"):
         cel, crit = t.get("celsius"), t.get("critical")
         if cel and cel > 0 and ((crit and cel >= crit - 8) or cel >= 85):
             c.add(Finding("hw.temp", HW, CRIT if crit and cel >= crit - 3 else MAJOR, f"Température élevée : {cel} °C",

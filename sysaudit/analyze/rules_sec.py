@@ -215,6 +215,7 @@ def hardening(c: Ctx):
 def accounts(c: Ctx):
     users = c.lst("security", "local_users")
     admins = c.lst("security", "admins")
+    nopwd = []
     for u in users:
         sid = u.get("sid") or ""
         if not u.get("enabled"):
@@ -226,10 +227,15 @@ def accounts(c: Ctx):
                           impact="Compte connu de tous les attaquants, souvent avec le même mot de passe sur tous les postes.",
                           fix="Le désactiver et utiliser des comptes administrateurs nominatifs (ou LAPS pour les postes du domaine)."))
         if not u.get("password_required") and not sid.endswith(("-503", "-504")):
-            c.add(Finding(f"acct.nopwd.{u.get('name')}", SEC, MAJOR, f"Compte « {u.get('name')} » autorisé sans mot de passe",
-                          detail="L'indicateur « mot de passe obligatoire » est désactivé sur ce compte actif.",
-                          impact="Le compte peut avoir un mot de passe vide : accès local, voire réseau, sans authentification.",
-                          fix=f"Exécuter « net user \"{u.get('name')}\" /passwordreq:yes » et définir un mot de passe robuste."))
+            nopwd.append(u.get("name") or "?")
+    if nopwd:
+        c.add(Finding("acct.nopwd", SEC, MAJOR, f"Comptes locaux pouvant avoir un mot de passe vide ({len(nopwd)})",
+                      detail=f"Comptes actifs dont l'indicateur « mot de passe obligatoire » est désactivé : {sjoin(', ', nopwd)}. "
+                             "Cela ne signifie pas que le mot de passe est vide, mais que Windows accepterait un mot de passe vide "
+                             "(souvent le cas des comptes créés par script ou par un outil de déploiement).",
+                      impact="Si l'un de ces comptes a un mot de passe vide, il permet un accès local (et réseau selon la configuration) "
+                             "sans authentification.",
+                      fix="Pour chaque compte : « net user \"NOM\" /passwordreq:yes », puis vérifier qu'il a un mot de passe robuste."))
     local_admins = [a for a in admins if (a.get("source") or "").lower() in ("local", "") and not (a.get("sid") or "").endswith("-500")]
     if len(admins) > 3 or len(local_admins) > 2:
         c.add(Finding("acct.admins", SEC, MINOR, f"{len(admins)} membres dans le groupe Administrateurs",

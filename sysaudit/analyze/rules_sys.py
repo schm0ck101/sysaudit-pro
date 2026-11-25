@@ -23,6 +23,11 @@ BAD_WU = {4: "échec", 5: "annulée"}
 
 
 def os_support(c: Ctx):
+    if not c.build:
+        # informations système non collectées : ne jamais conclure à un Windows obsolète
+        c.not_checked("nc.os", SYS, "Version et fin de support de Windows",
+                      "Les informations système n'ont pas pu être lues pendant l'analyse (relancer l'analyse).")
+        return
     life = os_life(c.build, c.product_type, c.os.get("edition"))
     name = c.os.get("caption") or life.name
     ver = f"{name} {c.os.get('display_version') or ''} (build {c.build}.{c.os.get('ubr') or 0})".replace("  ", " ")
@@ -78,6 +83,9 @@ def updates(c: Ctx):
         t = g.get("key") or ((g.get("props") or [])[1:2] or ["?"])[0]
         fails[t] = max(fails[t], int(g.get("count") or 0))
     store = re.compile(r"^[0-9A-Z]{12}-")       # applications du Microsoft Store (ex. 9N3RK8ZV2ZR8-Microsoft.…)
+    # définitions antivirus (plusieurs par jour, un échec isolé est sans conséquence)
+    defs = re.compile(r"defender|antivirus|veille de sécurité|security intelligence|KB2267602|sélection disjointe", re.I)
+    fails = Counter({t: k for t, k in fails.items() if not defs.search(t) or k >= 5})
     sys_fail = {t: k for t, k in fails.items() if not store.match(t)}
     app_fail = {t: k for t, k in fails.items() if store.match(t)}
     if sys_fail:
@@ -113,8 +121,12 @@ def updates(c: Ctx):
                           fix="Remettre le service « Windows Update » en démarrage manuel ; si un outil tiers l'a désactivé, le retirer."))
     pol = c.get("updates", "wu_policy") or {}
     if pol.get("no_auto") == 1:
-        c.add(Finding("wu.policy_off", SYS, MAJOR, "Mises à jour automatiques désactivées par stratégie",
-                      detail="Clé NoAutoUpdate = 1.", impact="Les mises à jour dépendent d'une action manuelle, souvent oubliée.",
+        # parc géré (WSUS, GLPI, Intune…) : sans conséquence si les correctifs arrivent bien
+        recent = last is not None and (c.now - last).days <= 40
+        c.add(Finding("wu.policy_off", SYS, INFO if recent else MAJOR, "Mises à jour automatiques désactivées par stratégie",
+                      detail="Clé NoAutoUpdate = 1." + (" Les correctifs sont pourtant récents : ils sont probablement déployés "
+                                                        "par un outil de gestion (WSUS, Intune, GLPI…)." if recent else ""),
+                      impact="Les mises à jour dépendent d'une action manuelle ou d'un outil de gestion, à vérifier.",
                       fix="Réactiver les mises à jour automatiques ou s'assurer qu'un outil de gestion (WSUS, Intune, RMM) les déploie."))
     if pol.get("paused_until"):
         d = parse_dt(pol["paused_until"])
@@ -193,7 +205,7 @@ def disk_space(c: Ctx):
 
 
 def memory(c: Ctx):
-    m = c.get("system", "memory_perf") or {}
+    m = {**(c.get("system", "memory_perf") or {}), **(c.get("perf", "memory_pool") or {})}
     ram = c.ram
     if m.get("commit_limit"):
         ratio = m["committed"] / m["commit_limit"] * 100
@@ -264,7 +276,7 @@ def cpu_perf(c: Ctx):
             c.add(Finding("cpu.load", SYS, MAJOR if avg >= 90 else MINOR, f"Processeur très sollicité : {avg:.0f} %",
                           detail=f"Charge mesurée pendant l'analyse. Processus principaux : {top or 'non déterminés'}.",
                           impact="Lenteurs générales.", fix="Identifier le processus en cause (analyse antivirus, mise à jour, programme bloqué)."))
-    for d in c.lst("system", "disk_perf"):
+    for d in c.lst("perf", "disk_perf") or c.lst("system", "disk_perf"):
         lat = max(d.get("read_s") or 0, d.get("write_s") or 0)
         if lat >= 0.05 and (d.get("busy") or 0) >= 50:
             c.add(Finding(f"disk.latency.{d.get('name')}", SYS, MAJOR if lat >= 0.2 else MINOR,
@@ -374,12 +386,24 @@ def network(c: Ctx):
                           detail=f"{a.get('description')} est connectée à {a.get('speed')}.",
                           impact="Débit limité à 10 % d'une liaison gigabit : câble abîmé (paires coupées), câble trop ancien ou port lent.",
                           fix="Remplacer le câble (catégorie 5e minimum) et vérifier le port du switch."))
+    # adresse APIPA (169.254.x.x) : seulement sur une vraie carte connectée ; Bluetooth, VPN et
+    # cartes virtuelles en ont normalement une. Grave seulement si AUCUNE carte n'a d'adresse valide.
+    adapters = {a.get("name"): a for a in c.lst("network", "adapters") if a.get("name")}
+    skip = re.compile(r"bluetooth|virtual|virtuel|vpn|tap-|tun|wan miniport|hyper-v|vmware|virtualbox|npcap|loopback|"
+                      r"fortinet|cisco anyconnect|globalprotect|wireguard|zerotier|tailscale|docker|vethernet", re.I)
+    valid = any(a and not a.startswith("169.254.") for ip in c.lst("network", "ip") for a in (ip.get("ipv4") or []))
     for ip in c.lst("network", "ip"):
+        alias = ip.get("alias") or ""
+        ad = adapters.get(alias, {})
+        if skip.search(f"{alias} {ad.get('description') or ''}") or (ad and ad.get("status") != "Up"):
+            continue
         for a in ip.get("ipv4") or []:
             if a and a.startswith("169.254."):
-                c.add(Finding(f"net.apipa.{ip.get('alias')}", SYS, MAJOR, f"Pas d'adresse IP valide sur « {ip.get('alias')} »",
-                              detail=f"Adresse automatique {a} : aucun serveur DHCP n'a répondu.",
-                              impact="Pas d'accès au réseau sur cette interface.", fix="Vérifier le câble, le switch et le serveur DHCP."))
+                c.add(Finding(f"net.apipa.{alias}", SYS, MINOR if valid else MAJOR, f"Pas d'adresse IP valide sur « {alias} »",
+                              detail=f"Adresse automatique {a} : aucun serveur DHCP n'a répondu sur cette carte"
+                                     + (" (le poste dispose d'une autre connexion valide)." if valid else "."),
+                              impact="Cette carte réseau ne donne accès à rien" + ("" if valid else " : le poste n'a aucun accès au réseau") + ".",
+                              fix="Si cette carte est utilisée : vérifier le câble, le switch et le serveur DHCP ; sinon, la désactiver."))
     con = c.get("network", "connectivity") or {}
     gw = con.get("gateway")
     if gw and gw.get("sent"):

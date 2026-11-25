@@ -17,12 +17,21 @@ try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch {}
 $R = [ordered]@{}
 $script:E = New-Object System.Collections.ArrayList
 function D($d) { if ($null -eq $d -or "$d" -eq '') { return $null }; try { return ([datetime]$d).ToString('o') } catch { return $null } }
+# Chaque section est écrite dès qu'elle est prête (une ligne « @@{json} ») :
+# si le script dépasse son délai, les sections déjà collectées sont conservées
+# et « @@>nom » indique celle qui était en cours.
+function Emit([string]$k, $v) {
+  $h = @{}; $h[$k] = $v
+  [Console]::Out.WriteLine('@@' + (ConvertTo-Json -InputObject $h -Depth 7 -Compress)); [Console]::Out.Flush()
+}
 function T([string]$k, [scriptblock]$b) {
-  try { $R[$k] = & $b } catch { [void]$script:E.Add("${k}: $($_.Exception.Message)") }
+  [Console]::Out.WriteLine("@@>$k"); [Console]::Out.Flush()
+  try { $v = & $b; $R[$k] = $v; Emit $k $v } catch { [void]$script:E.Add("${k}: $($_.Exception.Message)") }
 }
 # TL : section de type liste (PowerShell « déroule » un tableau d'un seul élément)
 function TL([string]$k, [scriptblock]$b) {
-  try { $R[$k] = @(& $b | Where-Object { $null -ne $_ }) } catch { [void]$script:E.Add("${k}: $($_.Exception.Message)") }
+  [Console]::Out.WriteLine("@@>$k"); [Console]::Out.Flush()
+  try { $v = @(& $b | Where-Object { $null -ne $_ }); $R[$k] = $v; Emit $k $v } catch { [void]$script:E.Add("${k}: $($_.Exception.Message)") }
 }
 function WE($f, [int]$max) {
   # Get-WinEvent lève une erreur quand rien ne correspond : c'est « zéro événement », pas un échec
@@ -33,12 +42,12 @@ function RegV($path, $name) {
   try { $v = Get-ItemProperty -LiteralPath $path -Name $name -ErrorAction Stop; return $v.$name } catch { return $null }
 }
 $IsAdmin = (New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-$R['is_admin'] = $IsAdmin
+Emit 'is_admin' $IsAdmin
 """
 
 EPILOGUE = r"""
-$R['_errors'] = @($script:E)
-$R | ConvertTo-Json -Depth 7 -Compress
+Emit '_errors' @($script:E)
+[Console]::Out.WriteLine('@@END')
 """
 
 # ---------------------------------------------------------------- système
@@ -71,10 +80,11 @@ TL 'cpu' {
     logical = [int]$_.NumberOfLogicalProcessors; max_mhz = [int]$_.MaxClockSpeed; current_mhz = [int]$_.CurrentClockSpeed;
     virtualization = [bool]$_.VirtualizationFirmwareEnabled } })
 }
+# Charge et mémoire sans les classes « PerfFormattedData » : leur première
+# interrogation peut prendre plus d'une minute (reconstruction des compteurs WMI).
 TL 'cpu_load' {
   $s = @(); for ($i = 0; $i -lt 3; $i++) {
-    $p = Get-CimInstance Win32_PerfFormattedData_PerfOS_Processor -Filter "Name='_Total'"
-    $s += [int]$p.PercentProcessorTime; Start-Sleep -Milliseconds 900 }
+    $s += [int]((Get-CimInstance Win32_Processor | Measure-Object LoadPercentage -Average).Average); Start-Sleep -Milliseconds 700 }
   $s
 }
 TL 'ram_modules' {
@@ -83,25 +93,23 @@ TL 'ram_modules' {
 }
 T 'ram_slots' { $a = Get-CimInstance Win32_PhysicalMemoryArray; [ordered]@{ slots = [int](($a | Measure-Object MemoryDevices -Sum).Sum); max_kb = [int64](($a | Measure-Object MaxCapacityEx -Sum).Sum) } }
 T 'memory_perf' {
-  $m = Get-CimInstance Win32_PerfFormattedData_PerfOS_Memory
-  [ordered]@{ committed = [int64]$m.CommittedBytes; commit_limit = [int64]$m.CommitLimit; available_mb = [int64]$m.AvailableMBytes;
-    pool_nonpaged = [int64]$m.PoolNonpagedBytes; pool_paged = [int64]$m.PoolPagedBytes; pages_sec = [int64]$m.PagesPersec;
-    cache = [int64]$m.CacheBytes; compressed = $null }
+  # TotalVirtualMemorySize = limite de mémoire engagée, FreeVirtualMemory = reste disponible
+  $o = Get-CimInstance Win32_OperatingSystem
+  [ordered]@{ committed = ([int64]$o.TotalVirtualMemorySize - [int64]$o.FreeVirtualMemory) * 1024;
+    commit_limit = [int64]$o.TotalVirtualMemorySize * 1024; available_mb = [int64]([int64]$o.FreePhysicalMemory / 1024) }
 }
 TL 'pagefile' {
   @(Get-CimInstance Win32_PageFileUsage | ForEach-Object { [ordered]@{ name = $_.Name; allocated_mb = [int]$_.AllocatedBaseSize;
     current_mb = [int]$_.CurrentUsage; peak_mb = [int]$_.PeakUsage } })
 }
-TL 'disk_perf' {
-  @(Get-CimInstance Win32_PerfFormattedData_PerfDisk_PhysicalDisk | Where-Object Name -ne '_Total' | ForEach-Object {
-    [ordered]@{ name = $_.Name; queue = [double]$_.AvgDiskQueueLength; busy = [int]$_.PercentDiskTime;
-      read_s = [double]$_.AvgDisksecPerRead; write_s = [double]$_.AvgDisksecPerWrite } })
-}
 T 'processes' {
-  $cpu = @{}
-  try { Get-CimInstance Win32_PerfFormattedData_PerfProc_Process | ForEach-Object { $cpu[[int]$_.IDProcess] = [int]$_.PercentProcessorTime } } catch {}
-  $now = Get-Date
+  # % processeur par processus : écart du temps CPU sur 1 seconde (rapide, sans compteurs WMI)
+  $t0 = @{}; foreach ($p in Get-Process) { try { $t0[$p.Id] = $p.TotalProcessorTime.TotalMilliseconds } catch {} }
+  Start-Sleep -Milliseconds 1000
+  $ncpu = [Environment]::ProcessorCount
   $all = @(Get-Process)
+  $cpu = @{}
+  foreach ($p in $all) { try { if ($t0.ContainsKey($p.Id)) { $cpu[$p.Id] = [int][math]::Round(($p.TotalProcessorTime.TotalMilliseconds - $t0[$p.Id]) / 10 / $ncpu) } } catch {} }
   $tot = [ordered]@{ count = $all.Count; handles = [int64](($all | Measure-Object HandleCount -Sum).Sum);
     threads = [int64](($all | ForEach-Object { $_.Threads.Count } | Measure-Object -Sum).Sum) }
   $sel = @($all | Sort-Object PrivateMemorySize64 -Descending | Select-Object -First 12) + @($all | Sort-Object HandleCount -Descending | Select-Object -First 8) + @($all | Where-Object { $cpu[$_.Id] -gt 5 })
@@ -148,11 +156,6 @@ T 'battery' {
     [ordered]@{ count = $b.Count; name = $b[0].Name; charge = [int]$b[0].EstimatedChargeRemaining; status = [int]$b[0].BatteryStatus;
       design_mwh = $design; full_mwh = $full; cycles = $cycles }
   }
-}
-TL 'thermal' {
-  @(Get-CimInstance -Namespace root\wmi -ClassName MSAcpi_ThermalZoneTemperature | ForEach-Object {
-    [ordered]@{ zone = $_.InstanceName; celsius = [math]::Round($_.CurrentTemperature / 10 - 273.15, 1);
-      critical = [math]::Round($_.CriticalTripPoint / 10 - 273.15, 1) } })
 }
 T 'power_plan' {
   $o = & "$env:windir\System32\powercfg.exe" /getactivescheme 2>&1 | Out-String
@@ -344,7 +347,6 @@ TL 'pending' {
   if ('__ONLINE__' -ne '1') { return }
   $s = New-Object -ComObject Microsoft.Update.Session
   $searcher = $s.CreateUpdateSearcher()
-  $searcher.Online = $true
   $r = $searcher.Search("IsInstalled=0 and IsHidden=0 and Type='Software'")
   $R['pending_checked'] = $true
   @($r.Updates | ForEach-Object { [ordered]@{ title = $_.Title; severity = $_.MsrcSeverity; kb = @($_.KBArticleIDs);
@@ -579,9 +581,30 @@ TL 'certificates' {
 T 'uac_user' { [ordered]@{ user = "$env:USERDOMAIN\$env:USERNAME" } }
 """
 
+# ---------------------------------------------------------------- performances
+# Compteurs WMI lents à la première interrogation : collecteur séparé, pour ne
+# jamais bloquer l'identification du poste.
+PERF = r"""
+T 'memory_pool' {
+  $m = Get-CimInstance Win32_PerfRawData_PerfOS_Memory
+  [ordered]@{ pool_nonpaged = [int64]$m.PoolNonpagedBytes; pool_paged = [int64]$m.PoolPagedBytes; cache = [int64]$m.CacheBytes }
+}
+TL 'disk_perf' {
+  @(Get-CimInstance Win32_PerfFormattedData_PerfDisk_PhysicalDisk | Where-Object Name -ne '_Total' | ForEach-Object {
+    [ordered]@{ name = $_.Name; queue = [double]$_.AvgDiskQueueLength; busy = [int]$_.PercentDiskTime;
+      read_s = [double]$_.AvgDisksecPerRead; write_s = [double]$_.AvgDisksecPerWrite } })
+}
+TL 'thermal' {
+  @(Get-CimInstance -Namespace root\wmi -ClassName MSAcpi_ThermalZoneTemperature | ForEach-Object {
+    [ordered]@{ zone = $_.InstanceName; celsius = [math]::Round($_.CurrentTemperature / 10 - 273.15, 1);
+      critical = [math]::Round($_.CriticalTripPoint / 10 - 273.15, 1) } })
+}
+"""
+
 COLLECTORS: dict[str, tuple[str, str, int]] = {
     # nom : (libellé, script, délai max en secondes)
-    "system": ("Système et matériel", SYSTEM, 90),
+    "system": ("Système et matériel", SYSTEM, 120),
+    "perf": ("Performances (compteurs Windows)", PERF, 150),
     "disks": ("Disques et stockage", DISKS, 120),
     "events": ("Journaux d'événements et fiabilité", EVENTS, 240),
     "updates": ("Mises à jour Windows", UPDATES, 240),

@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 
 from . import rules_hw, rules_sec, rules_sys
 from .context import Ctx
-from .model import CRIT, DOMAINS, INFO, MAJOR, MINOR, NOT_CHECKED, OK, Finding, human_bytes, parse_dt
+from .model import SYS, CRIT, DOMAINS, INFO, MAJOR, MINOR, NOT_CHECKED, OK, Finding, human_bytes, parse_dt
 
 log = logging.getLogger(__name__)
 ALL_RULES = rules_hw.RULES + rules_sys.RULES + rules_sec.RULES
@@ -61,12 +61,16 @@ def machine_info(c: Ctx) -> dict:
     ips = []
     for i in c.lst("network", "ip"):
         ips += [a.split("/")[0] for a in i.get("ipv4") or [] if a and not a.startswith("169.254")]
+    host = c.snap.get("host") or {}
+    user = (c.get("security", "uac_user") or {}).get("user", "")
+    # dernier repli : « POSTE\utilisateur » d'un compte local donne le nom du poste
+    name = cs.get("name") or host.get("name") or (user.split("\\")[0] if "\\" in user else "") or "?"
     return {
-        "name": cs.get("name") or "?",
+        "name": name,
         "domain": cs.get("domain") or "",
         "in_domain": c.in_domain,
         "role": "Contrôleur de domaine" if c.is_dc else "Serveur" if c.is_server else "Poste de travail",
-        "os": f"{o.get('caption', '')} {o.get('display_version') or ''}".strip(),
+        "os": f"{o.get('caption', '')} {o.get('display_version') or ''}".strip() or host.get("platform", ""),
         "build": f"{o.get('version', '')}.{o.get('ubr') or 0}",
         "manufacturer": cs.get("manufacturer") or "",
         "model": cs.get("model") or "",
@@ -80,8 +84,8 @@ def machine_info(c: Ctx) -> dict:
         "is_vm": c.is_vm,
         "is_laptop": c.is_laptop,
         "admin": c.admin,
-        "user": (c.get("security", "uac_user") or {}).get("user", ""),
-        "key": f"{cs.get('name') or ''}|{bios.get('serial') or ''}".upper(),
+        "user": (c.get("security", "uac_user") or {}).get("user", "") or host.get("user", ""),
+        "key": f"{name}|{bios.get('serial') or ''}".upper(),
     }
 
 
@@ -94,6 +98,14 @@ def analyze(snapshot: dict) -> Analysis:
         except Exception as exc:  # une règle défaillante ne doit pas bloquer l'analyse
             log.error("Règle %s : %s\n%s", rule.__name__, exc, traceback.format_exc())
             errors.append(f"{rule.__module__.rsplit('.', 1)[-1]}.{rule.__name__} : {exc}")
+    # collectes interrompues (délai dépassé, PowerShell bloqué…) : signalées dans « Non vérifié »
+    from ..collect.scripts import COLLECTORS
+    for name, sec in (snapshot.get("sections") or {}).items():
+        if sec.get("error"):
+            label = COLLECTORS.get(name, (name,))[0]
+            part = "incomplète" if sec.get("data") else "impossible"
+            c.not_checked(f"nc.collect.{name}", SYS, f"Collecte « {label} » {part}",
+                          f"{sec['error']}. Les contrôles qui dépendent de ces données n'ont pas pu être réalisés.")
     # dédoublonnage (même identifiant : on garde le plus grave)
     best: dict[str, Finding] = {}
     for f in c.findings:

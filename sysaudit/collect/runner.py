@@ -71,6 +71,28 @@ class Result:
         return {"ok": self.ok, "data": self.data, "error": self.error, "seconds": round(self.seconds, 1)}
 
 
+def parse_output(txt: str) -> tuple[dict, str, bool]:
+    """Lignes « @@{json} » (une section chacune), « @@>nom » (section en cours),
+    « @@END ». Renvoie (données, dernière section commencée, fin atteinte)."""
+    data: dict = {}
+    current, ended = "", False
+    for line in txt.splitlines():
+        line = line.strip()
+        if line == "@@END":
+            ended = True
+        elif line.startswith("@@>"):
+            current = line[3:]
+        elif line.startswith("@@{"):
+            try:
+                data.update(json.loads(line[2:]))
+            except json.JSONDecodeError:
+                log.warning("Section illisible : %s", line[:120])
+    errs = data.get("_errors")
+    if errs is not None and not isinstance(errs, list):
+        data["_errors"] = [errs]
+    return data, current, ended
+
+
 def run_script(text: str, timeout: int, cancel: threading.Event | None = None) -> tuple[dict | None, str]:
     """Exécute un script et renvoie (objet JSON, erreur)."""
     tmp = Path(tempfile.gettempdir()) / "SysAuditPro"
@@ -84,6 +106,7 @@ def run_script(text: str, timeout: int, cancel: threading.Event | None = None) -
                              creationflags=CREATE_NO_WINDOW)
         t0 = time.monotonic()
         out = err = b""
+        stopped = ""
         while True:
             try:
                 out, err = p.communicate(timeout=0.5)
@@ -91,16 +114,18 @@ def run_script(text: str, timeout: int, cancel: threading.Event | None = None) -
             except subprocess.TimeoutExpired:
                 if (cancel and cancel.is_set()) or time.monotonic() - t0 > timeout:
                     p.kill()
-                    p.communicate()
-                    return None, "annulé" if cancel and cancel.is_set() else f"délai dépassé ({timeout} s)"
-        txt = out.decode("utf-8", "replace").strip()
-        start = txt.find("{")
-        if start < 0:
-            return None, (err.decode("utf-8", "replace") or txt or "aucune donnée").strip()[:800]
-        try:
-            return json.loads(txt[start:]), ""
-        except json.JSONDecodeError as exc:
-            return None, f"réponse illisible : {exc}"
+                    out, err = p.communicate()      # ce qui a déjà été écrit est conservé
+                    stopped = "annulé" if cancel and cancel.is_set() else f"délai dépassé ({timeout} s)"
+                    break
+        data, current, ended = parse_output(out.decode("utf-8", "replace"))
+        if stopped:
+            if current and not ended:
+                stopped += f" pendant « {current} »"
+                data.setdefault("_errors", []).append(f"{current}: {stopped}")
+            return (data or None), stopped
+        if not data:
+            return None, (err.decode("utf-8", "replace") or out.decode("utf-8", "replace") or "aucune donnée").strip()[:800]
+        return data, ""
     except OSError as exc:
         return None, f"PowerShell introuvable ou bloqué : {exc}"
     finally:
@@ -127,7 +152,8 @@ def collect(options: dict | None = None, progress=None, cancel: threading.Event 
         text = scripts.build(name, days=o["days"], online_updates=o["online_updates"], network_tests=o["network_tests"])
         data, err = run_script(text, timeout, cancel)
         r.seconds = time.monotonic() - t0
-        r.ok, r.data, r.error = data is not None, data or {}, err
+        # ok = données exploitables (éventuellement partielles si le délai a été dépassé)
+        r.ok, r.data, r.error = bool(data), data or {}, err
         if err:
             log.warning("Collecte %s : %s", name, err)
         results[name] = r
@@ -138,10 +164,15 @@ def collect(options: dict | None = None, progress=None, cancel: threading.Event 
     order = sorted(names, key=lambda n: -scripts.COLLECTORS[n][2])
     with ThreadPoolExecutor(max_workers=4, thread_name_prefix="collect") as ex:
         list(ex.map(job, order))
+    import platform
+    import socket
     return {
         "format": 1,
         "collected_at": time.time(),
         "options": o,
         "admin": is_admin(),
+        # identité minimale lue sans PowerShell (repli si la collecte « système » échoue)
+        "host": {"name": socket.gethostname(), "platform": platform.platform(),
+                 "user": f"{os.environ.get('USERDOMAIN', '')}\\{os.environ.get('USERNAME', '')}"},
         "sections": {n: results[n].to_dict() for n in names if n in results},
     }

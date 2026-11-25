@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from test_rules import healthy  # noqa: E402
+from sysaudit.analyze.model import MINOR  # noqa: E402
 
 from sysaudit.analyze.engine import analyze  # noqa: E402
 
@@ -62,3 +63,53 @@ def test_ui_and_pdf_tolerate_none(tmp_path):
     report.export_pdf(tmp_path / "r.pdf", ctx.rec, ctx.analysis, ctx.settings, ctx.prev)
     win.close()
     st.close()
+
+
+def test_streamed_output_keeps_partial_sections():
+    from sysaudit.collect.runner import parse_output
+    out = ('@@{"is_admin":true}\n@@>os\n@@{"os":{"build":26100}}\n@@>computer\n@@{"computer":{"name":"PC-1"}}\n'
+           '@@>processes\n')                       # tué pendant « processes »
+    data, current, ended = parse_output(out)
+    assert data["os"]["build"] == 26100 and data["computer"]["name"] == "PC-1"
+    assert current == "processes" and not ended
+    data, _c, ended = parse_output(out + '@@{"_errors":"x: y"}\n@@END\n')
+    assert ended and data["_errors"] == ["x: y"]
+
+
+def test_missing_system_section_never_says_windows10():
+    from sysaudit.analyze.model import NOT_CHECKED
+    s = copy.deepcopy(healthy())
+    s["sections"]["system"] = {"ok": False, "data": {}, "error": "délai dépassé (90 s)"}
+    s["host"] = {"name": "PC-AURA", "platform": "Windows-11"}
+    a = analyze(s)
+    assert not [f for f in a.findings if f.id == "os.support"]
+    assert any(f.id == "nc.os" and f.severity == NOT_CHECKED for f in a.findings)
+    assert any(f.id == "nc.collect.system" for f in a.findings)
+    assert a.machine["name"] == "PC-AURA"
+
+
+def test_apipa_only_on_real_connected_adapters():
+    s = copy.deepcopy(healthy())
+    n = s["sections"]["network"]["data"]
+    n["adapters"] = [{"name": "Wi-Fi", "status": "Up", "description": "Intel Wi-Fi 6E"},
+                     {"name": "Connexion réseau Bluetooth", "status": "Up", "description": "Bluetooth Device (PAN)"},
+                     {"name": "Ethernet 2", "status": "Disconnected", "description": "Realtek USB GbE"},
+                     {"name": "Ethernet", "status": "Up", "description": "Intel Ethernet I219"}]
+    n["ip"] = [{"alias": "Wi-Fi", "ipv4": ["10.1.1.3/24"]},
+               {"alias": "Connexion réseau Bluetooth", "ipv4": ["169.254.49.208/16"]},
+               {"alias": "Ethernet 2", "ipv4": ["169.254.209.179/16"]},
+               {"alias": "Ethernet", "ipv4": ["169.254.1.2/16"]}]
+    a = analyze(s)
+    ap = [f for f in a.findings if f.id.startswith("net.apipa")]
+    assert [f.id for f in ap] == ["net.apipa.Ethernet"] and ap[0].severity == MINOR
+
+
+def test_user_snapshot_regression():
+    """Instantané réel envoyé par l'utilisateur (si présent en local, non versionné)."""
+    import json
+    p = Path(__file__).resolve().parents[1] / "dev" / "snapshot_portable_wipn.json"
+    if not p.exists():
+        return
+    a = analyze(json.loads(p.read_text(encoding="utf-8"))["snapshot"])
+    titles = " ".join(f.title for f in a.findings)
+    assert "Windows 10" not in titles and not a.rule_errors

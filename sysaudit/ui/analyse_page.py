@@ -259,7 +259,11 @@ class AnalysePage(QWidget):
             self.done_n += 1
             self.bar.setValue(self.done_n)
             errs = len((res.data or {}).get("_errors") or [])
-            if res.ok:
+            if res.ok and res.error:
+                dot.setText("!")
+                dot.setStyleSheet(f"color:{p.warn}")
+                st.setText(f"incomplet en {res.seconds:.0f} s : {res.error[:140]} (données partielles conservées)")
+            elif res.ok:
                 dot.setText("✓")
                 dot.setStyleSheet(f"color:{p.ok}")
                 st.setText(f"terminé en {res.seconds:.0f} s" + (f" · {errs} contrôle(s) non disponible(s)" if errs else ""))
