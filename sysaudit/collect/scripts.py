@@ -22,7 +22,9 @@ function D($d) { if ($null -eq $d -or "$d" -eq '') { return $null }; try { retur
 # et « @@>nom » indique celle qui était en cours.
 function Emit([string]$k, $v) {
   $h = @{}; $h[$k] = $v
-  [Console]::Out.WriteLine('@@' + (ConvertTo-Json -InputObject $h -Depth 7 -Compress)); [Console]::Out.Flush()
+  # JSON en ASCII pur (accents en \uXXXX) : indépendant de la page de code de la console
+  $j = [regex]::Replace((ConvertTo-Json -InputObject $h -Depth 7 -Compress), '[^\x00-\x7F]', { param($m) '\u{0:x4}' -f [int][char]$m.Value })
+  [Console]::Out.WriteLine('@@' + $j); [Console]::Out.Flush()
 }
 function T([string]$k, [scriptblock]$b) {
   [Console]::Out.WriteLine("@@>$k"); [Console]::Out.Flush()
@@ -347,9 +349,10 @@ TL 'pending' {
   if ('__ONLINE__' -ne '1') { return }
   $s = New-Object -ComObject Microsoft.Update.Session
   $searcher = $s.CreateUpdateSearcher()
-  $r = $searcher.Search("IsInstalled=0 and IsHidden=0 and Type='Software'")
-  $R['pending_checked'] = $true
-  @($r.Updates | ForEach-Object { [ordered]@{ title = $_.Title; severity = $_.MsrcSeverity; kb = @($_.KBArticleIDs);
+  # (pas de « $r » : PowerShell ne distingue pas la casse, ce serait la table $R des résultats)
+  $found = $searcher.Search("IsInstalled=0 and IsHidden=0 and Type='Software'")
+  Emit 'pending_checked' $true
+  @($found.Updates | ForEach-Object { [ordered]@{ title = $_.Title; severity = $_.MsrcSeverity; kb = @($_.KBArticleIDs);
     published = (D $_.LastDeploymentChangeTime); reboot = [bool]$_.RebootRequired; categories = @($_.Categories | ForEach-Object { $_.Name }) } })
 }
 """

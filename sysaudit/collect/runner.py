@@ -1,8 +1,8 @@
 """Exécution des collecteurs PowerShell, en parallèle et sans fenêtre.
 
-Les scripts sont écrits dans un fichier .ps1 temporaire (pas de
--EncodedCommand, souvent signalé par les antivirus) puis lancés avec
-Windows PowerShell 5.1 (`-NoProfile -ExecutionPolicy Bypass`).
+Windows PowerShell 5.1 reçoit chaque script en mémoire (entrée standard) :
+aucun fichier .ps1 écrit dans %TEMP%, pas de contournement de la stratégie
+d'exécution, pas de -EncodedCommand.
 """
 from __future__ import annotations
 
@@ -12,10 +12,8 @@ import logging
 import os
 import subprocess
 import sys
-import tempfile
 import threading
 import time
-import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -93,25 +91,36 @@ def parse_output(txt: str) -> tuple[dict, str, bool]:
     return data, current, ended
 
 
+# Le script est transmis en mémoire par l'entrée standard puis exécuté comme bloc de script :
+# aucun fichier écrit sur le disque, et pas de « -ExecutionPolicy Bypass » (la stratégie
+# d'exécution ne concerne que les fichiers .ps1). Le contenu reste analysé par l'antivirus (AMSI).
+STDIN_RUNNER = "$s = [Console]::In.ReadToEnd(); & ([scriptblock]::Create($s))"
+
+
+def to_ascii_script(text: str) -> bytes:
+    """Retire les lignes de commentaire (seules à contenir des accents) : l'entrée standard de
+    PowerShell 5.1 est lue dans la page de code de la console, l'ASCII est sûr partout."""
+    lines = [ln for ln in text.splitlines() if not ln.lstrip().startswith("#")]
+    return ("\r\n".join(lines) + "\r\n").encode("ascii")
+
+
 def run_script(text: str, timeout: int, cancel: threading.Event | None = None) -> tuple[dict | None, str]:
     """Exécute un script et renvoie (objet JSON, erreur)."""
-    tmp = Path(tempfile.gettempdir()) / "SysAuditPro"
-    tmp.mkdir(exist_ok=True)
-    f = tmp / f"c_{uuid.uuid4().hex}.ps1"
-    # BOM UTF-8 : indispensable pour que PowerShell 5.1 lise les accents du script
-    f.write_text(text, encoding="utf-8-sig")
-    cmd = [powershell_exe(), "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(f)]
+    payload = to_ascii_script(text)
+    cmd = [powershell_exe(), "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", STDIN_RUNNER]
     try:
-        p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
+        p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.PIPE,
                              creationflags=CREATE_NO_WINDOW)
         t0 = time.monotonic()
         out = err = b""
         stopped = ""
+        first = True
         while True:
             try:
-                out, err = p.communicate(timeout=0.5)
+                out, err = p.communicate(input=payload if first else None, timeout=0.5)
                 break
             except subprocess.TimeoutExpired:
+                first = False
                 if (cancel and cancel.is_set()) or time.monotonic() - t0 > timeout:
                     p.kill()
                     out, err = p.communicate()      # ce qui a déjà été écrit est conservé
@@ -128,11 +137,6 @@ def run_script(text: str, timeout: int, cancel: threading.Event | None = None) -
         return data, ""
     except OSError as exc:
         return None, f"PowerShell introuvable ou bloqué : {exc}"
-    finally:
-        try:
-            f.unlink()
-        except OSError:
-            pass
 
 
 def collect(options: dict | None = None, progress=None, cancel: threading.Event | None = None,
