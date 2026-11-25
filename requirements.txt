@@ -1,0 +1,2 @@
+# Dépendances d'exécution de SysAudit Pro
+PySide6-Essentials>=6.7
