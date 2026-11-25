@@ -21,7 +21,7 @@ $py = ".\.venv\Scripts\python.exe"
 if (-not $SkipTests) {
     Write-Host "Tests unitaires..." -ForegroundColor Cyan
     $env:SYSAUDIT_DATA_DIR = Join-Path $env:TEMP "sysaudit-build-tests"
-    & $py -m pytest -q tests\test_rules.py
+    & $py -m pytest -q tests\test_rules.py tests\test_robustness.py
     if ($LASTEXITCODE -ne 0) { throw "Les tests ont échoué" }
     Remove-Item Env:\SYSAUDIT_DATA_DIR
 }
