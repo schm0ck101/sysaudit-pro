@@ -48,3 +48,21 @@ def test_backup_products_grouped():
     names = {"AWS Plug-In for Veeam Backup & Replication", "Kasten Plug-In for Veeam Backup & Replication",
              "Veeam Backup & Replication", "Veeam Backup Server RESTful API Service", "Acronis Cyber Protect 15 (x64)"}
     assert _backup_products(names) == ["Veeam Backup & Replication", "Acronis Cyber Protect 15"]
+
+
+def test_veeam_replication_only_is_named():
+    """COLASHV : le seul événement 190 était « Replication job 'Replication Job 1' » du 03/11."""
+    s = server()
+    s["sections"]["backup"]["data"]["veeam"] = [
+        {"level": 4, "date": iso(22), "message": "Replication job 'Replication Job 1' finished with Success. All objects have been backed up."}]
+    a = analyze(s)
+    f = find(a, "bk.veeam.no_backup")[0]
+    assert f.severity == MAJOR and "22 jours" in f.title and "Replication Job 1" in f.detail
+    assert "bk.veeam.age" not in ids(a)
+    # sauvegarde + réplication : l'âge porte sur la sauvegarde, échec nommé par travail
+    s["sections"]["backup"]["data"]["veeam"] += [
+        {"level": 4, "date": iso(0.5), "message": "Backup job 'Serveurs' finished with Success."},
+        {"level": 2, "date": iso(0.2), "message": "Backup job 'NAS' finished with Failed."}]
+    a = analyze(s)
+    assert find(a, "bk.veeam.ok") and "bk.veeam.no_backup" not in ids(a)
+    assert "bk.veeam.failed.NAS" in ids(a)

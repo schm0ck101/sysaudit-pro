@@ -19,6 +19,9 @@ BACKUP_SW = re.compile(r"veeam|acronis|active backup|synology.*backup|datto|back
 BACKUP_PROV = re.compile(r"veeam|acronis|backup exec|arcserve|altaro|nakivo|cobian|uranium|macrium|iperius|shadowprotect|datto|"
                          r"active backup|msp360|cloudberry", re.I)
 
+# « Backup job 'Serveur' finished with Success. » / « Replication job 'X' finished with Warning »
+VEEAM_MSG = re.compile(r"^\s*(.*?)\s*'([^']+)'\s+finished with", re.I)
+
 # fins de support SQL Server (support étendu), par version majeure
 SQL_EOL = {"9": ("SQL Server 2005", date(2016, 4, 12)), "10": ("SQL Server 2008", date(2019, 7, 9)),
            "10.50": ("SQL Server 2008 R2", date(2019, 7, 9)), "11": ("SQL Server 2012", date(2022, 7, 12)),
@@ -541,30 +544,64 @@ def backups(c: Ctx):
                           detail=wsb.get("message") or "", fix="Lire le détail dans la console Sauvegarde Windows Server et corriger la cause."))
     elif not wsb and "Windows-Server-Backup" in features and "wsb" in errs and DENIED.search(errs["wsb"]):
         c.not_checked("nc.wsb", SVC, "État de la Sauvegarde Windows Server")
-    # --- Veeam
+    # --- Veeam : état travail par travail (sauvegarde, copie, réplication)
     ve = c.lst("backup", "veeam")
     if ve:
         found.add("Veeam")
-        ev = sorted(ve, key=lambda e: e.get("date") or "")
-        last = ev[-1]
-        succ = [e for e in ev if int(e.get("level") or 4) in (0, 3, 4)]
-        age = _age(c, succ[-1].get("date")) if succ else None
-        if int(last.get("level") or 4) in (1, 2):
-            c.add(Finding("bk.veeam.failed", SVC, MAJOR, "Dernier travail de sauvegarde Veeam en échec",
-                          detail=f"Le {fr_date(parse_dt(last.get('date')))} : {last.get('message') or ''}",
-                          impact="La sauvegarde la plus récente n'est pas exploitable.",
-                          fix="Ouvrir la console Veeam, lire l'erreur du travail et relancer la sauvegarde."))
-        if age is None:
-            c.add(Finding("bk.veeam.none", SVC, CRIT, "Veeam : aucune sauvegarde réussie depuis 60 jours",
-                          fix="Vérifier la configuration des travaux et la destination de sauvegarde."))
-        elif age > 2:
-            c.add(Finding("bk.veeam.age", SVC, CRIT if age > 7 else MAJOR, f"Dernière sauvegarde Veeam réussie il y a {age} jours",
-                          detail=f"Dernier travail terminé (événement 190) le {fr_date(parse_dt(last.get('date')))} : "
-                                 f"{(last.get('message') or '').strip()[:160]}",
-                          impact=f"Toutes les modifications des {age} derniers jours seraient perdues en cas de sinistre.",
-                          fix="Vérifier la planification et l'état des travaux dans la console Veeam."))
+        jobs: dict[str, dict] = {}
+        for e in sorted(ve, key=lambda e: e.get("date") or ""):
+            m = VEEAM_MSG.search(e.get("message") or "")
+            name = m.group(2) if m else ""
+            kind_txt = (m.group(1) if m else "").lower()
+            kind = "réplication" if "replica" in kind_txt else "copie de sauvegarde" if "copy" in kind_txt else "sauvegarde"
+            j = jobs.setdefault(name, {"name": name, "kind": kind, "last": None, "ok": None})
+            j["last"] = e
+            if int(e.get("level") or 4) in (0, 3, 4):
+                j["ok"] = e
+
+        def jdesc(j) -> str:
+            lab = f"« {j['name']} » ({j['kind']})" if j["name"] else f"travail de {j['kind']}"
+            d = parse_dt((j["ok"] or j["last"]).get("date"))
+            return f"{lab} : dernière réussite le {fr_date(d)}" if j["ok"] else f"{lab} : aucune réussite sur 60 jours"
+
+        for j in jobs.values():
+            if int(j["last"].get("level") or 4) in (1, 2):
+                c.add(Finding("bk.veeam.failed" + (f".{j['name']}" if j["name"] else ""), SVC, MAJOR,
+                              f"Travail Veeam en échec : {('« ' + j['name'] + ' »') if j['name'] else j['kind']}",
+                              detail=f"Le {fr_date(parse_dt(j['last'].get('date')))} : {(j['last'].get('message') or '').strip()[:200]}",
+                              impact="La copie la plus récente de ce travail n'est pas exploitable.",
+                              fix="Ouvrir la console Veeam, lire l'erreur du travail et le relancer."))
+        backups_ = [j for j in jobs.values() if j["kind"] != "réplication"]
+        detail = "Travaux vus dans le journal Veeam (60 jours) : " + " ; ".join(jdesc(j) for j in jobs.values()) + "."
+        if backups_:
+            oks = [j["ok"] for j in backups_ if j["ok"]]
+            last_ok = max(oks, key=lambda e: e.get("date") or "") if oks else None
+            age = _age(c, last_ok.get("date")) if last_ok else None
+            if age is None:
+                c.add(Finding("bk.veeam.none", SVC, CRIT, "Veeam : aucune sauvegarde réussie depuis 60 jours", detail=detail,
+                              fix="Vérifier la configuration des travaux et la destination de sauvegarde."))
+            elif age > 2:
+                c.add(Finding("bk.veeam.age", SVC, CRIT if age > 7 else MAJOR, f"Dernière sauvegarde Veeam réussie il y a {age} jours",
+                              detail=detail,
+                              impact=f"Toutes les modifications des {age} derniers jours seraient perdues en cas de sinistre.",
+                              fix="Vérifier la planification et l'état des travaux dans la console Veeam."))
+            else:
+                c.add(Finding("bk.veeam.ok", SVC, OK, f"Veeam : dernière sauvegarde réussie le {fr_date(parse_dt(last_ok.get('date')))}",
+                              detail=detail))
         else:
-            c.add(Finding("bk.veeam.ok", SVC, OK, f"Veeam : dernière sauvegarde réussie le {fr_date(parse_dt(succ[-1].get('date')))}"))
+            # seulement de la réplication (cas COLASHV : « Replication Job 1 », rien depuis 3 semaines)
+            oks = [j["ok"] for j in jobs.values() if j["ok"]]
+            last_ok = max(oks, key=lambda e: e.get("date") or "") if oks else None
+            age = _age(c, last_ok.get("date")) if last_ok else None
+            stale = age is None or age > 2
+            c.add(Finding("bk.veeam.no_backup", SVC, MAJOR,
+                          "Veeam : aucun travail de sauvegarde, seulement de la réplication"
+                          + (f" (dernière il y a {age} jours)" if age is not None and stale else ""),
+                          detail=detail,
+                          impact="Une réplication garde peu de points de restauration et peut recopier une suppression ou un chiffrement : "
+                                 "elle ne remplace pas une sauvegarde" + (", et elle ne tourne plus." if stale else "."),
+                          fix="Vérifier dans la console Veeam si des sauvegardes sont faites ailleurs ; sinon créer un travail de sauvegarde "
+                              "quotidien (avec une copie hors site) et vérifier la planification de la réplication."))
     # --- erreurs des logiciels de sauvegarde dans le journal Application
     groups = [g for g in c.lst("events", "application_errors") if BACKUP_PROV.search(g.get("provider") or "")]
     n = c.count_since(groups, 14)
