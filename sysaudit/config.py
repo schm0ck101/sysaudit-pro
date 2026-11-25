@@ -16,7 +16,7 @@ import threading
 from pathlib import Path
 
 APP_NAME = "SysAudit Pro"
-APP_VERSION = "1.0.4"
+APP_VERSION = "1.0.5"
 AUTHOR = "SCHMOCK"
 AUTHOR_URL = "https://schmock.fr"
 log = logging.getLogger(__name__)

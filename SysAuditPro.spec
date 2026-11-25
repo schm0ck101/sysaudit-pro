@@ -45,10 +45,16 @@ def _keep(entry):
 
 a.binaries = [b for b in a.binaries if _keep(b)]
 a.datas = [d for d in a.datas if _keep(d)]
+
+# Compatibilité Windows Server 2016 / Windows 10 1607 (voir tools/patch_qt.py)
+import sys as _sys
+_sys.path.insert(0, os.path.join(SPECPATH, "tools"))
+from patch_qt import patch_binaries  # noqa: E402
+a.binaries = patch_binaries(a.binaries, os.path.join(SPECPATH, "build", "qtpatch"))
 pyz = PYZ(a.pure)
 
 ONEFILE = os.environ.get("SYSAUDIT_ONEFILE") == "1"
-common = dict(debug=False, strip=False, upx=False, console=False,
+common = dict(debug=False, strip=False, upx=False, console=False, manifest=os.path.join(SPECPATH, "tools", "manifest.xml"),
               icon="assets/SysAuditPro.ico", version="tools/version_info.txt")
 if ONEFILE:
     exe = EXE(pyz, a.scripts, a.binaries, a.datas, [], name="SysAuditPro-Portable", runtime_tmpdir=None, **common)
