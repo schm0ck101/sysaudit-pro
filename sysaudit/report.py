@@ -88,12 +88,12 @@ def export_pdf(path: str | Path, rec: dict, analysis: Analysis, settings, prev: 
     h.append(f"""<p style='margin-top:80px'><span class='muted' style='font-size:12pt'>RAPPORT DE DIAGNOSTIC</span></p>
     <h1>{_e(m.get('name'))}</h1>
     <p style='font-size:12pt'>{_e(m.get('role'))} · {_e(m.get('os'))}</p>
-    <p style='font-size:15pt; margin-top:22px'><b>{_e(client)}</b></p>
+    <p style='margin-top:22px'><span style='font-size:15pt; font-weight:600'>{_e(client)}</span></p>
     <p style='font-size:11pt'>{_e(rec.get('site'))}</p>
     <p style='margin-top:36px'>Date de l'analyse : {when}<br>
     {('Intervenant : ' + _e(rec.get('auditor') or rep.get('auditor')) + '<br>') if (rec.get('auditor') or rep.get('auditor')) else ''}
     {' · '.join(_e(x) for x in (rep.get('company'), rep.get('phone'), rep.get('email')) if x)}</p>
-    <p style='margin-top:50px; font-size:22pt; color:{score_color(sc)}'><b>Note globale : {sc} / 100</b></p>
+    <p style='margin-top:50px'><span style='font-size:22pt; font-weight:700; color:{score_color(sc)}'>Note globale : {sc} / 100</span></p>
     <p style='font-size:12pt; color:{score_color(sc)}'>{verdict(sc)}</p>
     <p class='muted' style='margin-top:40px'>Document généré par {APP_NAME} {APP_VERSION}
     ({AUTHOR} · {AUTHOR_URL.removeprefix('https://')}) le {time.strftime('%d/%m/%Y à %H:%M')}.</p>""")
