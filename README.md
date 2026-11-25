@@ -4,6 +4,8 @@
 
 Créé par **SCHMOCK** — <https://schmock.fr>
 
+**Télécharger** (version portable ou installateur) : <https://github.com/schm0ck101/sysaudit-pro/releases/latest>
+
 Diagnostic complet de **postes de travail et serveurs Windows**. SysAudit Pro
 liste tout ce qui ne va pas **et tout ce qui risque de mal tourner** : disque
 qui s'use, mémoire qui fuit, mises à jour bloquées, plantages qui se
