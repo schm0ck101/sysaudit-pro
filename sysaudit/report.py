@@ -92,23 +92,29 @@ def _ring(p, cx: float, cy: float, r: float, width: float, value: int, color: st
     p.restore()
 
 
+def _domains(analysis: Analysis) -> list[tuple[str, str]]:
+    """Domaines notés dans cette analyse (une analyse ancienne n'a pas « Rôles et sauvegardes »)."""
+    return [(d, label) for d, label in DOMAINS.items() if d in analysis.scores]
+
+
 def _domain_rings_image(analysis: Analysis):
     """Image des trois jauges de domaine (insérée dans la synthèse)."""
     from PySide6.QtCore import QRectF, Qt
     from PySide6.QtGui import QColor, QFont, QImage, QPainter
 
-    W, H = 1500, 420
+    doms = _domains(analysis)
+    W, H = 420 * len(doms), 420
     img = QImage(W, H, QImage.Format_ARGB32_Premultiplied)
     img.fill(Qt.transparent)
     p = QPainter(img)
     p.setRenderHint(QPainter.Antialiasing)
-    col_w = W / 3
-    for i, (d, label) in enumerate(DOMAINS.items()):
+    col_w = W / len(doms)
+    for i, (d, label) in enumerate(doms):
         s = int(analysis.scores.get(d, 0))
         cx = col_w * i + col_w / 2
         _ring(p, cx, 150, 112, 22, s, score_color(s), 92)
         f = QFont("Segoe UI")
-        f.setPixelSize(40)
+        f.setPixelSize(36)
         f.setWeight(QFont.DemiBold)
         p.setFont(f)
         p.setPen(QColor(INK))
@@ -228,7 +234,7 @@ def _build_html(rec: dict, analysis: Analysis, rep: dict, prev: Analysis | None,
     n += 1
     h.append(f"<p style='font-size:10pt'>Note globale <b style='color:{score_color(sc)}'>{sc} / 100</b> — "
              f"<span style='color:{score_color(sc)}'>{verdict(sc)}</span>.</p>")
-    h.append(f"<p style='margin-top:8px' align='center'><img src='{add_img(_domain_rings_image(analysis))}' width='600'></p>")
+    h.append(f"<p style='margin-top:8px' align='center'><img src='{add_img(_domain_rings_image(analysis))}' width='{min(640, 190 * len(_domains(analysis)))}'></p>")
     risks = analysis.risks
     kpis = [(counts[CRIT], "critique" if counts[CRIT] <= 1 else "critiques", SEV_COLOR[CRIT], SEV_TINT[CRIT]),
             (counts[MAJOR], "majeur" if counts[MAJOR] <= 1 else "majeurs", SEV_COLOR[MAJOR], SEV_TINT[MAJOR]),
@@ -499,20 +505,22 @@ def export_pdf(path: str | Path, rec: dict, analysis: Analysis, settings, prev: 
              f"⚠  {_plural(len(analysis.risks), 'risque à venir', 'risques à venir')} à anticiper", f_c, "#8a5a00")
 
     # notes par domaine
-    y_d = mm(212)
+    # notes par domaine : jauge centrée, libellé dessous (3 ou 4 domaines)
+    y_d = mm(206)
     p.setPen(QPen(QColor(LINE), mm(0.3)))
     p.drawLine(QPointF(mm(18), y_d - mm(8)), QPointF(mm(192), y_d - mm(8)))
-    col_w = mm(174) / 3
-    for i, (d, label) in enumerate(DOMAINS.items()):
+    doms = _domains(analysis)
+    dw = mm(174) / max(1, len(doms))
+    f_dl = font(9, QFont.DemiBold)
+    for i, (d, label) in enumerate(doms):
         s = int(analysis.scores.get(d, 0))
-        cx = mm(18) + col_w * i
-        _ring(p, cx + mm(10), y_d + mm(9), mm(8.5), mm(2), s, score_color(s), pt(13))
-        f_dl = font(9, QFont.DemiBold)
-        text(p, QRectF(cx + mm(22), y_d + mm(1), col_w - mm(24), mm(11)), label, f_dl, INK, Qt.AlignLeft | Qt.AlignBottom | Qt.TextWordWrap)
-        text(p, QRectF(cx + mm(22), y_d + mm(12), col_w - mm(24), mm(5)), f"{s} / 100", font(8.5), MUTED)
+        x = mm(18) + dw * i
+        _ring(p, x + dw / 2, y_d + mm(9), mm(8.5), mm(2), s, score_color(s), pt(13))
+        text(p, QRectF(x + mm(2), y_d + mm(20), dw - mm(4), mm(10)), label, f_dl, INK, Qt.AlignHCenter | Qt.AlignTop | Qt.TextWordWrap)
+    col_w = mm(174) / 3
 
     # informations
-    y_i = mm(244)
+    y_i = mm(248)
     p.setPen(QPen(QColor(LINE), mm(0.3)))
     p.drawLine(QPointF(mm(18), y_i - mm(6)), QPointF(mm(192), y_i - mm(6)))
     auditor = rec.get("auditor") or rep.get("auditor") or ""

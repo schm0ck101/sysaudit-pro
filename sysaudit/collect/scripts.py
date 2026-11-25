@@ -93,7 +93,8 @@ TL 'ram_modules' {
   @(Get-CimInstance Win32_PhysicalMemory | ForEach-Object { [ordered]@{ capacity = [int64]$_.Capacity; speed = [int]$_.Speed;
     configured_speed = [int]$_.ConfiguredClockSpeed; manufacturer = "$($_.Manufacturer)".Trim(); part = "$($_.PartNumber)".Trim(); slot = $_.DeviceLocator } })
 }
-T 'ram_slots' { $a = Get-CimInstance Win32_PhysicalMemoryArray; [ordered]@{ slots = [int](($a | Measure-Object MemoryDevices -Sum).Sum); max_kb = [int64](($a | Measure-Object MaxCapacityEx -Sum).Sum) } }
+T 'ram_slots' { $a = @(Get-CimInstance Win32_PhysicalMemoryArray); [ordered]@{ slots = [int](($a | Measure-Object MemoryDevices -Sum).Sum); max_kb = [int64](($a | Measure-Object MaxCapacityEx -Sum).Sum);
+  ecc = $(if ($a.Count) { [int]$a[0].MemoryErrorCorrection } else { $null }) } }
 T 'memory_perf' {
   # TotalVirtualMemorySize = limite de mémoire engagée, FreeVirtualMemory = reste disponible
   $o = Get-CimInstance Win32_OperatingSystem
@@ -221,6 +222,18 @@ TL 'folders' {
      (DirSize "$w\Logs\CBS" 2000), (DirSize "$env:ProgramData\Microsoft\Windows\WER" 3000),
      (DirSize "$sd\`$Recycle.Bin" 3000) ) | Where-Object { $_ }
 }
+TL 'virtual_disks' {
+  @(Get-VirtualDisk -ErrorAction Stop | ForEach-Object { [ordered]@{ name = $_.FriendlyName; health = "$($_.HealthStatus)";
+    operational = @($_.OperationalStatus | ForEach-Object { "$_" }); resiliency = $_.ResiliencySettingName; size = [int64]$_.Size } })
+}
+TL 'storage_pools' {
+  @(Get-StoragePool -ErrorAction Stop | Where-Object { -not $_.IsPrimordial } | ForEach-Object { [ordered]@{ name = $_.FriendlyName; health = "$($_.HealthStatus)";
+    read_only = [bool]$_.IsReadOnly; size = [int64]$_.Size; allocated = [int64]$_.AllocatedSize } })
+}
+TL 'controllers' {
+  @(Get-CimInstance Win32_SCSIController -ErrorAction Stop | ForEach-Object { [ordered]@{ name = $_.Name; status = $_.Status; driver = $_.DriverName;
+    error = [int]$_.ConfigManagerErrorCode } })
+}
 T 'memory_dump' {
   $f = Get-Item -LiteralPath "$env:windir\MEMORY.DMP" -Force -ErrorAction SilentlyContinue
   if ($f) { [ordered]@{ bytes = [int64]$f.Length; date = (D $f.LastWriteTime) } } else { $null }
@@ -270,7 +283,10 @@ TL 'system_warnings' {
   $prov = @('disk', 'Disk', 'Ntfs', 'Microsoft-Windows-Ntfs', 'storahci', 'stornvme', 'iaStorA', 'iaStorAC', 'iaStorAVC', 'Microsoft-Windows-WHEA-Logger',
             'Microsoft-Windows-Resource-Exhaustion-Detector', 'Microsoft-Windows-Kernel-Processor-Power', 'Microsoft-Windows-Kernel-Power',
             'volmgr', 'Microsoft-Windows-Time-Service', 'Microsoft-Windows-DNS-Client', 'NETLOGON', 'Microsoft-Windows-GroupPolicy',
-            'Microsoft-Windows-Kernel-Boot', 'Microsoft-Windows-StorPort', 'Microsoft-Windows-Kernel-PnP', 'nvlddmkm', 'amdkmdag', 'Display')
+            'Microsoft-Windows-Kernel-Boot', 'Microsoft-Windows-StorPort', 'Microsoft-Windows-Kernel-PnP', 'nvlddmkm', 'amdkmdag', 'Display',
+            'megasas', 'megasas2i', 'megasas35i', 'megasr', 'MR_MONITOR', 'LSI_SAS', 'LSI_SAS2', 'LSI_SAS3', 'percsas2i', 'percsas3i',
+            'HpCISSs2', 'HpCISSs3', 'SmartPqi', 'arcsas', 'iaStorV', 'iaStorE', 'Server Administrator', 'Storage Service',
+            'Microsoft-Windows-StorageSpaces-Driver')
   # (un ProviderName absent du poste ferait échouer tout le filtre : tri côté script)
   $ev = @((WE @{ LogName = 'System'; Level = 3; StartTime = $start } 10000) | Where-Object { $prov -contains $_.ProviderName })
   Agg $ev @()
@@ -300,7 +316,7 @@ T 'security_logons' {
     ForEach-Object { $p = $_.Key.Split('|'); [ordered]@{ user = $p[0]; ip = $p[1]; type = $p[2]; count = $_.Value } }) }
 }
 TL 'log_coverage' {
-  @('System', 'Application') | ForEach-Object {
+  @('System', 'Application', 'Security') | ForEach-Object {
     $o = Get-WinEvent -LogName $_ -MaxEvents 1 -Oldest -ErrorAction SilentlyContinue
     $l = Get-WinEvent -ListLog $_ -ErrorAction SilentlyContinue
     [ordered]@{ log = $_; oldest = (D $o.TimeCreated); max_bytes = [int64]$l.MaximumSizeInBytes; records = [int64]$l.RecordCount; mode = "$($l.LogMode)" } }
@@ -577,11 +593,40 @@ TL 'shares' {
     [ordered]@{ name = $s.Name; path = $s.Path; access = $acc } })
 }
 TL 'certificates' {
-  @(Get-ChildItem Cert:\LocalMachine\My -ErrorAction Stop | ForEach-Object { [ordered]@{ subject = $_.Subject; issuer = $_.Issuer;
+  # magasin lu par .NET : le lecteur « Cert: » n'existe pas toujours dans une session lancee par -Command
+  $st = New-Object System.Security.Cryptography.X509Certificates.X509Store('My', 'LocalMachine')
+  $st.Open('ReadOnly')
+  $all = @($st.Certificates); $st.Close()
+  @($all | ForEach-Object { [ordered]@{ subject = $_.Subject; issuer = $_.Issuer;
     not_after = (D $_.NotAfter); not_before = (D $_.NotBefore); private_key = [bool]$_.HasPrivateKey; thumbprint = $_.Thumbprint;
-    eku = @($_.EnhancedKeyUsageList | ForEach-Object { $_.FriendlyName }); self_signed = ($_.Subject -eq $_.Issuer) } })
+    eku = @($_.Extensions | Where-Object { $_ -is [System.Security.Cryptography.X509Certificates.X509EnhancedKeyUsageExtension] } |
+      ForEach-Object { $_.EnhancedKeyUsages } | ForEach-Object { $_.FriendlyName }); self_signed = ($_.Subject -eq $_.Issuer) } })
 }
 T 'uac_user' { [ordered]@{ user = "$env:USERDOMAIN\$env:USERNAME" } }
+T 'mp_prefs' {
+  $p = Get-MpPreference -ErrorAction Stop
+  [ordered]@{ excl_path = @($p.ExclusionPath | Select-Object -First 40); excl_proc = @($p.ExclusionProcess | Select-Object -First 40);
+    excl_ext = @($p.ExclusionExtension | Select-Object -First 40); asr = @($p.AttackSurfaceReductionRules_Ids | Where-Object { $_ }).Count;
+    pua = [int]$p.PUAProtection; maps = [int]$p.MAPSReporting; network_protection = [int]$p.EnableNetworkProtection;
+    cfa = [int]$p.EnableControlledFolderAccess; realtime_off = [bool]$p.DisableRealtimeMonitoring }
+}
+T 'auditpol' {
+  if (-not $IsAdmin) { return $null }
+  # sortie CSV : colonnes fixes (GUID de sous-categorie en 4e, valeur numerique 0-3 en 7e), independantes de la langue
+  $o = [ordered]@{}
+  $lines = @(& "$env:windir\System32\auditpol.exe" /get /category:* /r 2>$null | Where-Object { $_ })
+  foreach ($l in ($lines | Select-Object -Skip 1)) { $f = $l.Split(','); if ($f.Count -ge 7) { try { $o[$f[3].Trim().Trim('{', '}').ToUpper()] = [int]$f[6].Trim() } catch {} } }
+  $o
+}
+T 'psv2' {
+  try { "$((Get-WindowsOptionalFeature -Online -FeatureName MicrosoftWindowsPowerShellV2Root -ErrorAction Stop).State)" }
+  catch { try { if ((Get-WindowsFeature PowerShell-V2 -ErrorAction Stop).Installed) { 'Enabled' } else { 'Disabled' } } catch { $null } }
+}
+T 'ldap' {
+  $p = 'HKLM:\SYSTEM\CurrentControlSet\Services\NTDS\Parameters'
+  [ordered]@{ integrity = (RegV $p 'LDAPServerIntegrity'); channel_binding = (RegV $p 'LdapEnforceChannelBinding');
+    client_signing = (RegV 'HKLM:\SYSTEM\CurrentControlSet\Services\ldap' 'LDAPClientIntegrity') }
+}
 """
 
 # ---------------------------------------------------------------- performances
@@ -604,6 +649,214 @@ TL 'thermal' {
 }
 """
 
+# ---------------------------------------------------------------- rôles serveur
+# Chaque rôle n'est interrogé que si son service existe : sur un poste de
+# travail, ce collecteur se termine en quelques secondes.
+ROLES = r"""
+function SvcX($n) { [bool](Get-CimInstance Win32_Service -Filter "Name='$n'" -ErrorAction SilentlyContinue) }
+function Grp($ev) {
+  $g = @{}
+  foreach ($e in $ev) { $k = [int]$e.Id
+    if (-not $g.ContainsKey($k)) { $m = $null; try { $m = $e.FormatDescription() } catch {}; if (-not $m) { try { $m = $e.Message } catch {} }
+      if ($m -and $m.Length -gt 300) { $m = $m.Substring(0, 300) }
+      $g[$k] = [ordered]@{ id = $k; provider = $e.ProviderName; level = [int]$e.Level; count = 0; last = $null; message = $m } }
+    $g[$k].count++; $t = $e.TimeCreated.ToString('o'); if (-not $g[$k].last -or $t -gt $g[$k].last) { $g[$k].last = $t } }
+  @($g.Values)
+}
+function LogGrp([string]$log, [int]$days) {
+  try { Grp (WE @{ LogName = $log; Level = 1, 2; StartTime = (Get-Date).AddDays(-$days) } 3000) } catch { @() }
+}
+$HasNTDS = SvcX 'NTDS'
+TL 'role_services' {
+  @('NTDS', 'DNS', 'DFSR', 'NtFrs', 'Netlogon', 'Kdc', 'ADWS', 'IsmServ', 'DHCPServer', 'vmms', 'W3SVC', 'CertSvc', 'WsusService',
+    'TermServLicensing', 'Tssdis', 'Spooler', 'LanmanServer', 'W32Time') | ForEach-Object {
+    $s = Get-CimInstance Win32_Service -Filter "Name='$_'" -ErrorAction SilentlyContinue
+    if ($s) { [ordered]@{ name = $s.Name; state = $s.State; start = $s.StartMode } } }
+  @(Get-CimInstance Win32_Service -Filter "Name LIKE 'MSSQL%' OR Name LIKE 'SQLAgent%'" -ErrorAction SilentlyContinue | ForEach-Object {
+    [ordered]@{ name = $_.Name; state = $_.State; start = $_.StartMode } })
+}
+T 'ad' {
+  if (-not $HasNTDS) { return $null }
+  Import-Module ActiveDirectory -ErrorAction Stop
+  $d = Get-ADDomain; $f = Get-ADForest
+  $o = [ordered]@{ domain = $d.DNSRoot; netbios = $d.NetBIOSName; domain_mode = "$($d.DomainMode)"; forest_mode = "$($f.ForestMode)";
+    pdc = $d.PDCEmulator; rid = $d.RIDMaster; infra = $d.InfrastructureMaster; schema = $f.SchemaMaster; naming = $f.DomainNamingMaster;
+    this = [System.Net.Dns]::GetHostEntry('').HostName }
+  $o.dcs = @(Get-ADDomainController -Filter * | ForEach-Object { [ordered]@{ name = $_.HostName; os = $_.OperatingSystem; site = $_.Site;
+    gc = [bool]$_.IsGlobalCatalog; ro = [bool]$_.IsReadOnly; ip = "$($_.IPv4Address)" } })
+  try { $o.recycle_bin = [bool]@((Get-ADOptionalFeature -Filter "Name -eq 'Recycle Bin Feature'").EnabledScopes).Count } catch {}
+  # dSASignature : mis a jour a chaque sauvegarde de l'annuaire (tous controleurs confondus)
+  try { $md = Get-ADReplicationAttributeMetadata -Object $d.DistinguishedName -Server $env:COMPUTERNAME -Properties dSASignature
+        $o.last_backup = (D $md.LastOriginatingChangeTime); $o.backup_version = [int]$md.Version } catch {}
+  try { $o.tombstone_days = [int](Get-ADObject "CN=Directory Service,CN=Windows NT,CN=Services,$((Get-ADRootDSE).configurationNamingContext)" -Properties tombstoneLifetime).tombstoneLifetime } catch {}
+  try { $p = Get-ADDefaultDomainPasswordPolicy
+        $o.pwd_policy = [ordered]@{ min_length = [int]$p.MinPasswordLength; complexity = [bool]$p.ComplexityEnabled; lockout = [int]$p.LockoutThreshold;
+          max_age_days = [int]$p.MaxPasswordAge.TotalDays; history = [int]$p.PasswordHistoryCount; reversible = [bool]$p.ReversibleEncryptionEnabled } } catch {}
+  try { $o.fgpp = @(Get-ADFineGrainedPasswordPolicy -Filter *).Count } catch {}
+  $o.ds_errors = LogGrp 'Directory Service' 14
+  $o
+}
+TL 'ad_repl' {
+  if (-not $HasNTDS) { return }
+  Import-Module ActiveDirectory -ErrorAction Stop
+  @(Get-ADReplicationPartnerMetadata -Target $env:COMPUTERNAME -Scope Server -ErrorAction Stop | ForEach-Object {
+    [ordered]@{ partner = "$($_.Partner)"; partition = "$($_.Partition)"; last_success = (D $_.LastReplicationSuccess);
+      last_attempt = (D $_.LastReplicationAttempt); result = [int64]$_.LastReplicationResult; failures = [int]$_.ConsecutiveReplicationFailures } })
+}
+T 'ad_accounts' {
+  if (-not $HasNTDS) { return $null }
+  Import-Module ActiveDirectory -ErrorAction Stop
+  $lim = (Get-Date).AddDays(-90)
+  function N($x) { @($x | Select-Object -First 25 | ForEach-Object { $_.SamAccountName }) }
+  $u = @(Get-ADUser -Filter * -Properties LastLogonDate, PasswordNeverExpires, PasswordLastSet, PasswordNotRequired, DoesNotRequirePreAuth,
+         AllowReversiblePasswordEncryption, ServicePrincipalName, AdminCount, whenCreated)
+  $en = @($u | Where-Object { $_.Enabled })
+  $inactive = @($en | Where-Object { $_.whenCreated -lt $lim -and (-not $_.LastLogonDate -or $_.LastLogonDate -lt $lim) -and "$($_.SID)" -notmatch '-(501|502|503)$' })
+  $nexp = @($en | Where-Object { $_.PasswordNeverExpires })
+  $krb = $u | Where-Object { "$($_.SID)" -like '*-502' } | Select-Object -First 1
+  $adm = $u | Where-Object { "$($_.SID)" -like '*-500' } | Select-Object -First 1
+  $dsid = "$((Get-ADDomain).DomainSID)"
+  function GM($rid) { try { @(Get-ADGroupMember -Identity "$dsid-$rid" -Recursive -ErrorAction Stop | ForEach-Object { $_.SamAccountName }) } catch { $null } }
+  $c = @(Get-ADComputer -Filter * -Properties OperatingSystem, LastLogonDate, whenCreated)
+  $cen = @($c | Where-Object { $_.Enabled })
+  $cin = @($cen | Where-Object { $_.whenCreated -lt $lim -and (-not $_.LastLogonDate -or $_.LastLogonDate -lt $lim) })
+  $old = @($cen | Where-Object { $_.OperatingSystem -match 'Windows (XP|Vista|7|8|8\.1|2000)\b|Server (2003|2008|2012)' })
+  $laps = 0
+  foreach ($attr in @('msLAPS-PasswordExpirationTime', 'ms-Mcs-AdmPwdExpirationTime')) {
+    try { $n = @(Get-ADComputer -Filter "Enabled -eq 'True'" -Properties $attr -ErrorAction Stop | Where-Object { $_.$attr }).Count; if ($n -gt $laps) { $laps = $n } } catch {} }
+  [ordered]@{ users = $u.Count; enabled = $en.Count; inactive_count = $inactive.Count; inactive = (N $inactive);
+    never_expires_count = $nexp.Count; never_expires = (N $nexp);
+    not_required = (N @($en | Where-Object { $_.PasswordNotRequired })); preauth = (N @($en | Where-Object { $_.DoesNotRequirePreAuth }));
+    reversible = (N @($en | Where-Object { $_.AllowReversiblePasswordEncryption }));
+    spn_admin = (N @($en | Where-Object { $_.ServicePrincipalName -and $_.AdminCount -eq 1 -and "$($_.SID)" -notlike '*-502' }));
+    krbtgt_pwd = $(if ($krb) { D $krb.PasswordLastSet }); admin_pwd = $(if ($adm) { D $adm.PasswordLastSet });
+    admin_enabled = $(if ($adm) { [bool]$adm.Enabled }); admin_name = $(if ($adm) { $adm.SamAccountName }); admin_last_logon = $(if ($adm) { D $adm.LastLogonDate });
+    domain_admins = (GM 512); enterprise_admins = (GM 519); schema_admins = (GM 518);
+    computers = $cen.Count; computers_inactive_count = $cin.Count; computers_inactive = @($cin | Select-Object -First 25 | ForEach-Object { $_.Name });
+    old_os_count = $old.Count; old_os = @($old | Select-Object -First 25 | ForEach-Object { "$($_.Name) ($($_.OperatingSystem))" }); laps_count = $laps }
+}
+T 'sysvol' {
+  if (-not $HasNTDS) { return $null }
+  $frs = Get-CimInstance Win32_Service -Filter "Name='NtFrs'" -ErrorAction SilentlyContinue
+  [ordered]@{ dfsr_state = (RegV 'HKLM:\SYSTEM\CurrentControlSet\Services\DFSR\Parameters\SysVols\Migrating Sysvols' 'Local State');
+    frs_state = $(if ($frs) { $frs.State }); frs_start = $(if ($frs) { $frs.StartMode });
+    sysvol_share = [bool](Get-SmbShare -Name SYSVOL -ErrorAction SilentlyContinue); netlogon_share = [bool](Get-SmbShare -Name NETLOGON -ErrorAction SilentlyContinue);
+    dfsr_errors = (LogGrp 'DFS Replication' 14); frs_errors = (LogGrp 'File Replication Service' 14) }
+}
+T 'dns_server' {
+  if (-not (SvcX 'DNS')) { return $null }
+  Import-Module DnsServer -ErrorAction Stop
+  $o = [ordered]@{}
+  try { $o.forwarders = @((Get-DnsServerForwarder -ErrorAction Stop).IPAddress | ForEach-Object { "$_" }) } catch {}
+  if ('__NET__' -eq '1' -and $o.forwarders) {
+    $o.forwarders_down = @($o.forwarders | Where-Object {
+      $ok = $false; try { $null = Resolve-DnsName -Name 'www.microsoft.com' -Server $_ -DnsOnly -QuickTimeout -ErrorAction Stop; $ok = $true } catch {}; -not $ok }) }
+  try { $s = Get-DnsServerScavenging -ErrorAction Stop; $o.scavenging = [bool]$s.ScavengingState } catch {}
+  try { $o.zones = @(Get-DnsServerZone -ErrorAction Stop | Where-Object { -not $_.IsAutoCreated -and "$($_.ZoneType)" -eq 'Primary' -and $_.ZoneName -ne 'TrustAnchors' } | ForEach-Object {
+      $z = $_; $ag = $null; try { $ag = [bool](Get-DnsServerZoneAging -Name $z.ZoneName -ErrorAction Stop).AgingEnabled } catch {}
+      [ordered]@{ name = $z.ZoneName; ad = [bool]$z.IsDsIntegrated; dynamic = "$($z.DynamicUpdate)"; reverse = [bool]$z.IsReverseLookupZone; aging = $ag } }) } catch {}
+  $o.errors = LogGrp 'DNS Server' 14
+  $o
+}
+T 'dhcp' {
+  if (-not (SvcX 'DHCPServer')) { return $null }
+  Import-Module DhcpServer -ErrorAction Stop
+  $o = [ordered]@{ scopes = @(Get-DhcpServerv4Scope -ErrorAction Stop | ForEach-Object { $sc = $_; $st = $null
+      try { $st = Get-DhcpServerv4ScopeStatistics -ScopeId $sc.ScopeId -ErrorAction Stop } catch {}
+      [ordered]@{ id = "$($sc.ScopeId)"; name = $sc.Name; state = "$($sc.State)"; lease_h = [double]$sc.LeaseDuration.TotalHours;
+        in_use = $(if ($st) { [int]$st.InUse }); free = $(if ($st) { [int]$st.Free }); pct = $(if ($st) { [double]$st.PercentageInUse }) } }) }
+  try { $o.failover = @(Get-DhcpServerv4Failover -ErrorAction Stop | ForEach-Object { [ordered]@{ name = $_.Name; partner = $_.PartnerServer; state = "$($_.State)" } }) } catch {}
+  try { $ips = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop | ForEach-Object { "$($_.IPAddress)" })
+        $o.authorized = [bool]@(Get-DhcpServerInDC -ErrorAction Stop | Where-Object { $ips -contains "$($_.IPAddress)" }).Count } catch {}
+  $o
+}
+T 'hyperv' {
+  if (-not (SvcX 'vmms')) { return $null }
+  Import-Module Hyper-V -ErrorAction Stop
+  $vhds = New-Object System.Collections.ArrayList
+  $vms = @(Get-VM -ErrorAction Stop | ForEach-Object { $v = $_
+    $cp = @(Get-VMSnapshot -VM $v -ErrorAction SilentlyContinue)
+    foreach ($h in @(Get-VMHardDiskDrive -VM $v -ErrorAction SilentlyContinue)) {
+      try { $x = Get-VHD -Path $h.Path -ErrorAction Stop
+            [void]$vhds.Add([ordered]@{ vm = $v.Name; path = $x.Path; type = "$($x.VhdType)"; file = [int64]$x.FileSize; max = [int64]$x.Size }) }
+      catch { [void]$vhds.Add([ordered]@{ vm = $v.Name; path = $h.Path; type = $null; file = $null; max = $null }) } }
+    [ordered]@{ name = $v.Name; state = "$($v.State)"; status = "$($v.Status)"; heartbeat = "$($v.Heartbeat)"; ic_state = "$($v.IntegrationServicesState)";
+      cpu = [int]$v.ProcessorCount; mem = [int64]$v.MemoryAssigned; startup_mem = [int64]$v.MemoryStartup; dynamic = [bool]$v.DynamicMemoryEnabled;
+      gen = [int]$v.Generation; version = "$($v.Version)"; checkpoints = $cp.Count;
+      oldest_cp = $(if ($cp.Count) { D (($cp | Sort-Object CreationTime | Select-Object -First 1).CreationTime) });
+      repl = "$($v.ReplicationHealth)"; auto_start = "$($v.AutomaticStartAction)" } })
+  [ordered]@{ vms = $vms; vhds = @($vhds); errors = (LogGrp 'Microsoft-Windows-Hyper-V-VMMS-Admin' 14) }
+}
+TL 'sql' {
+  $base = 'HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server'
+  $inst = Get-ItemProperty "$base\Instance Names\SQL" -ErrorAction SilentlyContinue
+  if (-not $inst) { return }
+  foreach ($p in @($inst.PSObject.Properties | Where-Object { $_.Name -notlike 'PS*' })) {
+    $id = $p.Value; $setup = "$base\$id\Setup"
+    $data = RegV "$base\$id\MSSQLServer" 'DefaultData'
+    if (-not $data) { $root = RegV $setup 'SQLDataRoot'; if ($root) { $data = Join-Path $root 'DATA' } }
+    $mdf = @(); $ldf = @()
+    if ($data -and (Test-Path -LiteralPath $data)) {
+      $mdf = @(Get-ChildItem -LiteralPath $data -Filter *.mdf -ErrorAction SilentlyContinue | Sort-Object Length -Descending | Select-Object -First 8 | ForEach-Object { [ordered]@{ name = $_.Name; bytes = [int64]$_.Length } })
+      $ldf = @(Get-ChildItem -LiteralPath $data -Filter *.ldf -ErrorAction SilentlyContinue | Sort-Object Length -Descending | Select-Object -First 8 | ForEach-Object { [ordered]@{ name = $_.Name; bytes = [int64]$_.Length } }) }
+    [ordered]@{ instance = $p.Name; id = $id; edition = (RegV $setup 'Edition'); version = (RegV $setup 'Version'); patch = (RegV $setup 'PatchLevel');
+      data = $data; mdf = $mdf; ldf = $ldf }
+  }
+}
+T 'iis' {
+  if (-not (SvcX 'W3SVC')) { return $null }
+  $p = "$env:SystemDrive\inetpub\logs\LogFiles"
+  $sum = [int64]0; $n = 0; $oldest = $null
+  if (Test-Path -LiteralPath $p) { Get-ChildItem -LiteralPath $p -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object { $sum += $_.Length; $n++
+    if (-not $oldest -or $_.LastWriteTime -lt $oldest) { $oldest = $_.LastWriteTime } } }
+  [ordered]@{ log_bytes = $sum; log_files = $n; oldest = (D $oldest) }
+}
+"""
+
+# ---------------------------------------------------------------- sauvegardes
+BACKUP = r"""
+T 'wsb' {
+  if (-not (Get-Command Get-WBSummary -ErrorAction SilentlyContinue)) { return $null }
+  $s = Get-WBSummary -ErrorAction Stop
+  $pol = $null; try { $pol = [bool](Get-WBPolicy -ErrorAction Stop) } catch {}
+  [ordered]@{ last_success = (D $s.LastSuccessfulBackupTime); last_backup = (D $s.LastBackupTime); last_result = [int64]$s.LastBackupResultHR;
+    next = (D $s.NextBackupTime); versions = [int]$s.NumberOfVersions; message = "$($s.DetailedMessage)"; policy = $pol }
+}
+TL 'wsb_events' {
+  $ev = @(); try { $ev = @(WE @{ LogName = 'Microsoft-Windows-Backup'; StartTime = (Get-Date).AddDays(-60) } 400) } catch {}
+  @($ev | ForEach-Object { [ordered]@{ id = [int]$_.Id; level = [int]$_.Level; date = (D $_.TimeCreated) } })
+}
+TL 'veeam' {
+  foreach ($log in @('Veeam Agent', 'Veeam Backup')) {
+    $ev = @(); try { $ev = @(WE @{ LogName = $log; Id = 190; StartTime = (Get-Date).AddDays(-60) } 500) } catch {}
+    foreach ($e in $ev) { $m = $null; try { $m = $e.FormatDescription() } catch {}; if (-not $m) { try { $m = $e.Message } catch {} }
+      if ($m -and $m.Length -gt 200) { $m = $m.Substring(0, 200) }
+      [ordered]@{ log = $log; level = [int]$e.Level; date = (D $e.TimeCreated); message = $m } }
+  }
+}
+TL 'backup_services' {
+  @(Get-CimInstance Win32_Service -ErrorAction Stop | Where-Object { $_.Name -match 'veeam|acronis|backup|cobian|uranium|iperius|datto|shadowprotect|macrium|altaro|nakivo|arcserve|bacula|commvault|rubrik|ahsay|synology|activebackup|duplicati|carbonite|idrive|aomei|todo|crashplan|cohesity|zerto|wbengine' -or $_.DisplayName -match 'Veeam|Acronis|Backup|Sauvegarde|Synology|Datto|Iperius|Uranium|Macrium' } | ForEach-Object {
+    [ordered]@{ name = $_.Name; display = $_.DisplayName; state = $_.State; start = $_.StartMode } })
+}
+TL 'shadows' {
+  $vols = @{}; Get-CimInstance Win32_Volume -ErrorAction SilentlyContinue | ForEach-Object { $vols[$_.DeviceID] = $_.DriveLetter }
+  $g = @{}
+  foreach ($s in @(Get-CimInstance Win32_ShadowCopy -ErrorAction Stop)) {
+    $l = $vols[$s.VolumeName]; if (-not $l) { $l = $s.VolumeName }
+    $t = $s.InstallDate; if ($t -is [string]) { $t = [Management.ManagementDateTimeConverter]::ToDateTime($t) }
+    if (-not $g.ContainsKey($l)) { $g[$l] = [ordered]@{ volume = $l; count = 0; newest = $t; oldest = $t } }
+    $g[$l].count++; if ($t -gt $g[$l].newest) { $g[$l].newest = $t }; if ($t -lt $g[$l].oldest) { $g[$l].oldest = $t } }
+  @($g.Values | ForEach-Object { [ordered]@{ volume = $_.volume; count = $_.count; newest = (D $_.newest); oldest = (D $_.oldest) } })
+}
+T 'restore_points' {
+  if (-not $IsAdmin) { return $null }
+  $p = @(Get-ComputerRestorePoint -ErrorAction Stop)
+  $t = $null
+  if ($p.Count) { $t = ($p | Select-Object -Last 1).CreationTime; if ($t -is [string]) { $t = [Management.ManagementDateTimeConverter]::ToDateTime($t) } }
+  [ordered]@{ count = $p.Count; newest = (D $t) }
+}
+"""
+
 COLLECTORS: dict[str, tuple[str, str, int]] = {
     # nom : (libellé, script, délai max en secondes)
     "system": ("Système et matériel", SYSTEM, 120),
@@ -613,7 +866,9 @@ COLLECTORS: dict[str, tuple[str, str, int]] = {
     "updates": ("Mises à jour Windows", UPDATES, 240),
     "software": ("Services, tâches, logiciels et pilotes", SOFTWARE, 180),
     "network": ("Réseau", NETWORK, 120),
-    "security": ("Sécurité", SECURITY, 120),
+    "security": ("Sécurité", SECURITY, 150),
+    "roles": ("Rôles serveur (annuaire, DNS, DHCP, Hyper-V, SQL…)", ROLES, 240),
+    "backup": ("Sauvegardes", BACKUP, 90),
 }
 
 

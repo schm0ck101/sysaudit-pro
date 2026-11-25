@@ -59,7 +59,7 @@ class ResultsPage(QWidget):
         self.rings = {"global": ScoreRing("Note globale", 128)}
         row.addWidget(self.rings["global"])
         row.addSpacing(10)
-        short = {"hw": "Matériel", "sys": "Système", "sec": "Sécurité"}
+        short = {"hw": "Matériel", "sys": "Système", "sec": "Sécurité", "svc": "Rôles, sauv."}
         for d, label in DOMAINS.items():
             self.rings[d] = ScoreRing(short.get(d, label), 96)
             self.rings[d].setToolTip(label)

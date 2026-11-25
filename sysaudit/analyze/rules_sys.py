@@ -8,7 +8,7 @@ from statistics import median
 
 from .context import Ctx
 from .eol import os_life
-from .model import sjoin, CRIT, INFO, MAJOR, MINOR, OK, SYS, Finding, fr_date, human_bytes, parse_dt
+from .model import sjoin, CRIT, INFO, MAJOR, MINOR, OK, SEC, SYS, Finding, fr_date, human_bytes, parse_dt
 
 # services « Automatique » qu'il est normal de trouver arrêtés
 SERVICE_IGNORE = re.compile(
@@ -468,11 +468,15 @@ def logs(c: Ctx):
     for l in c.lst("events", "log_coverage"):
         old = parse_dt(l.get("oldest"))
         if old and (c.now - old).days < 7:
-            c.add(Finding(f"log.coverage.{l.get('log')}", SYS, MINOR,
-                          f"Journal « {l.get('log')} » trop court : {max(0, (c.now - old).days)} jour(s) d'historique",
+            sec = l.get("log") == "Security"
+            c.add(Finding(f"log.coverage.{l.get('log')}", SEC if sec else SYS, MINOR,
+                          f"Journal « {'Sécurité' if sec else l.get('log')} » trop court : {max(0, (c.now - old).days)} jour(s) d'historique",
                           detail=f"Taille maximale {human_bytes(l.get('max_bytes'))}, les événements anciens sont écrasés.",
-                          impact="Le diagnostic des incidents passés est impossible (et l'analyse de ce rapport porte sur une période réduite).",
-                          fix="Augmenter la taille maximale du journal (au moins 64 Mo) dans l'Observateur d'événements."))
+                          impact=("Après un incident (intrusion, compte compromis, fichier supprimé), il sera impossible de retracer qui a fait quoi."
+                                  if sec else "Le diagnostic des incidents passés est impossible (et l'analyse de ce rapport porte sur une période réduite)."),
+                          fix=("Augmenter la taille du journal Sécurité (au moins 512 Mo, 1 Go ou plus sur un contrôleur de domaine), "
+                               "idéalement le centraliser." if sec else
+                               "Augmenter la taille maximale du journal (au moins 64 Mo) dans l'Observateur d'événements.")))
     dism = c.get("software", "dism_health")
     if dism and dism.get("output"):
         o = dism["output"].lower()

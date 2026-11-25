@@ -169,6 +169,7 @@ class AnalysePage(QWidget):
         root.addWidget(self.steps_box)
         root.addStretch(1)
         self.t0 = 0.0
+        self._admin_asked = False
         self.timer = QTimer(self, interval=500, timeout=self._tick)
         self.reload()
 
@@ -217,6 +218,28 @@ class AnalysePage(QWidget):
             s.save()
         except OSError:
             pass
+        if not runner.is_admin() and not self._admin_asked:
+            # proposé une fois par session : client et site sont déjà enregistrés et seront repris après la relance
+            self._admin_asked = True
+            box = QMessageBox(self)
+            box.setWindowTitle("Droits administrateur")
+            box.setIcon(QMessageBox.Question)
+            box.setText("<b>Relancer en administrateur pour un diagnostic complet ?</b>")
+            box.setInformativeText("Sans droits administrateur, plusieurs contrôles seront indiqués « non vérifiés » : usure des disques, "
+                                   "BitLocker, état des sauvegardes et des clichés instantanés, stratégie d'audit et de mots de passe, "
+                                   "journal de sécurité, exclusions de l'antivirus, annuaire Active Directory…")
+            b_admin = box.addButton("Relancer en administrateur", QMessageBox.AcceptRole)
+            b_go = box.addButton("Continuer sans", QMessageBox.ActionRole)
+            box.addButton("Annuler", QMessageBox.RejectRole)
+            box.setDefaultButton(b_admin)
+            box.exec()
+            if box.clickedButton() is b_admin:
+                if runner.relaunch_as_admin():
+                    QApplication.instance().quit()
+                    return
+                QMessageBox.warning(self, "Administrateur", "L'élévation a été refusée ou a échoué : l'analyse continue sans droits administrateur.")
+            elif box.clickedButton() is not b_go:
+                return
         opts = {"days": int(s.get("analysis.days", 30)), "online_updates": self.opt_updates.isChecked(),
                 "network_tests": self.opt_net.isChecked()}
         for dot, lab, st in self.rows.values():

@@ -5,9 +5,9 @@ import re
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 
-# Domaines (choix du client : matériel/stabilité, système/performances, sécurité)
-HW, SYS, SEC = "hw", "sys", "sec"
-DOMAINS = {HW: "Matériel et stabilité", SYS: "Système et performances", SEC: "Sécurité"}
+# Domaines : matériel/stabilité, système/performances, sécurité, rôles serveur et sauvegardes
+HW, SYS, SEC, SVC = "hw", "sys", "sec", "svc"
+DOMAINS = {HW: "Matériel et stabilité", SYS: "Système et performances", SEC: "Sécurité", SVC: "Rôles et sauvegardes"}
 
 # Gravités
 NOT_CHECKED, OK, INFO, MINOR, MAJOR, CRIT = -1, 0, 1, 2, 3, 4
@@ -104,5 +104,5 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-__all__ = ["Finding", "DOMAINS", "SEVERITY", "HW", "SYS", "SEC", "NOT_CHECKED", "OK", "INFO", "MINOR", "MAJOR",
+__all__ = ["Finding", "DOMAINS", "SEVERITY", "HW", "SYS", "SEC", "SVC", "NOT_CHECKED", "OK", "INFO", "MINOR", "MAJOR",
            "CRIT", "sjoin", "parse_dt", "days_between", "human_bytes", "fr_date", "fr_num", "as_list", "utcnow", "timedelta"]

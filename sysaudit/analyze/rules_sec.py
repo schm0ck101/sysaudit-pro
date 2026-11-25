@@ -386,4 +386,115 @@ def software(c: Ctx):
         c.add(Finding("net.hosts", SEC, INFO, f"Fichier hosts personnalisé ({len(hosts)} entrée(s))", detail="; ".join(hosts[:6])))
 
 
-RULES = [antivirus, firewall, encryption, protocols, hardening, accounts, shares, certificates, software]
+# sous-catégories d'audit (GUID indépendants de la langue) : (libellé, bit attendu 1 = succès, 2 = échec)
+AUDIT = {
+    "0CCE9215-69AE-11D9-BED3-505054503030": ("Ouverture de session (échecs)", 2),
+    "0CCE923F-69AE-11D9-BED3-505054503030": ("Validation des informations d'identification (échecs)", 2),
+    "0CCE9235-69AE-11D9-BED3-505054503030": ("Gestion des comptes d'utilisateur", 1),
+    "0CCE9237-69AE-11D9-BED3-505054503030": ("Gestion des groupes de sécurité", 1),
+    "0CCE9217-69AE-11D9-BED3-505054503030": ("Verrouillage des comptes", 2),
+}
+AUDIT_DC = {"0CCE9242-69AE-11D9-BED3-505054503030": ("Service d'authentification Kerberos (échecs)", 2),
+            "0CCE923C-69AE-11D9-BED3-505054503030": ("Modifications du service d'annuaire", 1)}
+WRITABLE = re.compile(r"(?i)\\users\\|\\appdata\\|\\temp\\|\\tmp\\|\\downloads\\|\\téléchargements\\|^%temp%|^%appdata%|\\public\\")
+RISKY_EXT = {"exe", "dll", "ps1", "bat", "cmd", "vbs", "js", "scr", "msi", "hta", "lnk"}
+RISKY_PROC = re.compile(r"(?i)(^|\\)(powershell|pwsh|cmd|wscript|cscript|mshta|rundll32|regsvr32)\.exe$")
+
+
+def defender_settings(c: Ctx):
+    d = c.get("security", "defender") or {}
+    p = c.get("security", "mp_prefs") or {}
+    if not p or not (d.get("realtime") and d.get("antivirus")):
+        return
+
+    def clean(lst):
+        return [x for x in (lst or []) if x and not str(x).upper().startswith("N/A")]
+    paths, procs, exts = clean(p.get("excl_path")), clean(p.get("excl_proc")), clean(p.get("excl_ext"))
+    bad = [x for x in paths if re.match(r"^[A-Za-z]:\\?$", x) or WRITABLE.search(x)]
+    bad += [x for x in procs if RISKY_PROC.search(x)]
+    bad += [f".{x.lstrip('.')}" for x in exts if x.lstrip(".").lower() in RISKY_EXT]
+    if bad:
+        c.add(Finding("av.exclusions_risky", SEC, MAJOR, f"Exclusions dangereuses dans l'antivirus ({len(bad)})",
+                      detail=", ".join(bad[:10]),
+                      impact="Un logiciel malveillant placé dans ces emplacements (ou lancé par ces programmes) échappe totalement à l'antivirus ; "
+                             "c'est une technique classique des attaquants.",
+                      fix="Supprimer ces exclusions (Sécurité Windows › Exclusions, ou la stratégie qui les déploie) et ne garder que des "
+                          "exclusions précises documentées par les éditeurs."))
+    elif paths or procs or exts:
+        c.add(Finding("av.exclusions", SEC, INFO, f"Exclusions configurées dans Microsoft Defender ({len(paths) + len(procs) + len(exts)})",
+                      detail=", ".join((paths + procs + [f'.{e}' for e in exts])[:10]),
+                      fix="Vérifier que chaque exclusion est encore nécessaire."))
+    if not c.is_server and p.get("pua") == 0:
+        c.add(Finding("av.pua", SEC, MINOR, "Blocage des applications potentiellement indésirables désactivé",
+                      impact="Barres d'outils, logiciels publicitaires et faux optimiseurs s'installent sans alerte.",
+                      fix="Set-MpPreference -PUAProtection Enabled (ou Sécurité Windows › Contrôle des applications)."))
+
+
+def audit_policy(c: Ctx):
+    ap = c.get("security", "auditpol")
+    if not ap:
+        if not c.admin:
+            c.not_checked("nc.auditpol", SEC, "Stratégie d'audit de sécurité")
+        return
+    expected = dict(AUDIT, **(AUDIT_DC if c.is_dc else {}))
+    missing = [label for guid, (label, bit) in expected.items() if guid in ap and not (int(ap[guid] or 0) & bit)]
+    if missing:
+        c.add(Finding("audit.policy", SEC, MAJOR if c.is_dc else MINOR, f"Stratégie d'audit insuffisante ({len(missing)} catégorie(s))",
+                      detail="Non auditées : " + ", ".join(missing) + ".",
+                      impact="Les tentatives d'intrusion, créations de comptes ou ajouts dans des groupes d'administration ne laissent aucune trace.",
+                      fix="Activer ces catégories dans « Configuration avancée de la stratégie d'audit » (GPO), selon les recommandations ANSSI / Microsoft."))
+    elif any(g in ap for g in expected):
+        c.add(Finding("audit.ok", SEC, OK, "Stratégie d'audit de sécurité en place"))
+
+
+def hardening_extra(c: Ctx):
+    if c.get("security", "psv2") == "Enabled":
+        c.add(Finding("ps.v2", SEC, MINOR, "PowerShell 2.0 encore installé",
+                      impact="Les attaquants l'utilisent pour contourner la journalisation et l'analyse antivirus des scripts (AMSI).",
+                      fix="Désactiver la fonctionnalité « Windows PowerShell 2.0 » (Disable-WindowsOptionalFeature / Remove-WindowsFeature)."))
+    if c.is_dc:
+        l = c.get("security", "ldap") or {}
+        if l and int(l.get("integrity") or 1) < 2:
+            c.add(Finding("dc.ldap_signing", SEC, MAJOR, "Signature LDAP non exigée sur le contrôleur de domaine",
+                          impact="Permet des attaques par relais vers l'annuaire (modification de comptes ou de groupes depuis le réseau).",
+                          fix="GPO « Contrôleur de domaine : conditions requises pour la signature de serveur LDAP » = Exiger la signature "
+                              "(après avoir vérifié les journaux d'événements 2889)."))
+        if l and int(l.get("channel_binding") or 0) < 2:
+            c.add(Finding("dc.ldap_cbt", SEC, MINOR, "Liaison de canal LDAPS non exigée",
+                          fix="Régler LdapEnforceChannelBinding à 2 après une phase d'observation (événements 3039)."))
+    # comptes locaux inutilisés
+    stale = []
+    for u in c.lst("security", "local_users"):
+        sid = u.get("sid") or ""
+        if not u.get("enabled") or sid.endswith(("-500", "-501", "-503", "-504")):
+            continue
+        last = parse_dt(u.get("last_logon"))
+        if last and (c.now - last).days > 180:
+            stale.append(f"{u.get('name')} (dernière ouverture le {fr_date(last)})")
+    if stale:
+        c.add(Finding("acct.local_stale", SEC, MINOR, f"Comptes locaux actifs inutilisés depuis plus de 6 mois ({len(stale)})",
+                      detail=", ".join(stale[:8]),
+                      impact="Comptes oubliés dont le mot de passe n'est souvent plus changé : accès discret au poste.",
+                      fix="Désactiver les comptes locaux qui ne servent plus."))
+    # persistance suspecte : programme lancé avec les droits SYSTEM depuis un dossier modifiable par les utilisateurs
+    sus = []
+    for t in c.lst("software", "tasks"):
+        user = (t.get("user") or "").upper()
+        if (user in ("SYSTEM", "S-1-5-18", "NT AUTHORITY\\SYSTEM", "AUTORITE NT\\SYSTEM") or user.endswith("\\SYSTEM")) and WRITABLE.search(t.get("exe") or ""):
+            sus.append(f"tâche {t.get('path')}{t.get('name')} : {t.get('exe')}")
+    for s in c.lst("software", "services"):
+        p = (s.get("path") or "").split(".exe")[0]
+        # OneDrive installé par utilisateur : service de mise à jour légitime dans AppData
+        if WRITABLE.search(p) and not re.search(r"(?i)\\Microsoft\\OneDrive\\", p):
+            sus.append(f"service {s.get('name')} : {s.get('path')}")
+    if sus:
+        c.add(Finding("persist.writable", SEC, MAJOR, f"Programmes lancés avec les pleins droits depuis un dossier utilisateur ({len(sus)})",
+                      detail="; ".join(sus[:6]),
+                      impact="Technique de persistance courante des logiciels malveillants ; même légitime, tout utilisateur pouvant modifier "
+                             "ce fichier obtient les droits SYSTEM.",
+                      fix="Identifier chaque programme ; supprimer ce qui est inconnu (analyse antivirus) et déplacer les programmes légitimes "
+                          "dans « Program Files »."))
+
+
+RULES = [antivirus, firewall, encryption, protocols, hardening, accounts, shares, certificates, software,
+         defender_settings, audit_policy, hardening_extra]

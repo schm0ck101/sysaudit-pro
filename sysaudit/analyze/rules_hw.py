@@ -2,6 +2,7 @@
 bleus, arrêts brutaux, surchauffe, plantages, batterie, périphériques."""
 from __future__ import annotations
 
+import re
 from collections import Counter
 from statistics import mean
 
@@ -310,4 +311,60 @@ def not_checked(c: Ctx):
         c.not_checked("nc.disk_reliability", HW, "Compteurs d'usure et d'erreurs des disques (SMART)")
 
 
-RULES = [disks, crashes, app_crashes, reliability, devices, battery, firmware, not_checked]
+RAID_PROVIDERS = ("megasas", "megasas2i", "megasas35i", "megasr", "MR_MONITOR", "LSI_SAS", "LSI_SAS2", "LSI_SAS3", "percsas2i",
+                  "percsas3i", "HpCISSs2", "HpCISSs3", "SmartPqi", "arcsas", "iaStorV", "iaStorE", "Server Administrator", "Storage Service",
+                  "Microsoft-Windows-StorageSpaces-Driver")
+
+
+def storage_advanced(c: Ctx):
+    for v in c.lst("disks", "virtual_disks"):
+        if (v.get("health") or "Healthy") != "Healthy":
+            c.add(Finding(f"disk.vdisk.{v.get('name')}", HW, CRIT, f"Disque virtuel « {v.get('name')} » dégradé (espaces de stockage)",
+                          detail=f"État : {v.get('health')} ({sjoin(', ', v.get('operational'))}) ; résilience : {v.get('resiliency')}.",
+                          impact="La redondance est perdue : la panne d'un disque supplémentaire entraîne la perte des données.",
+                          fix="Remplacer le disque défaillant et lancer la réparation (Repair-VirtualDisk)."))
+    for p in c.lst("disks", "storage_pools"):
+        if (p.get("health") or "Healthy") != "Healthy":
+            c.add(Finding(f"disk.pool.{p.get('name')}", HW, MAJOR, f"Pool de stockage « {p.get('name')} » en état {p.get('health')}",
+                          fix="Vérifier les disques physiques du pool (Get-PhysicalDisk) et remplacer ceux en erreur."))
+        size, alloc = int(p.get("size") or 0), int(p.get("allocated") or 0)
+        if size and alloc / size > 0.9:
+            c.add(Finding(f"disk.pool_full.{p.get('name')}", HW, MINOR, f"Pool de stockage « {p.get('name')} » alloué à {alloc * 100 // size} %",
+                          impact="Plus de place pour reconstruire un disque virtuel après une panne, ni pour l'agrandir.",
+                          fix="Ajouter des disques au pool.", predictive=True))
+    bad_ctrl = [x.get("name") for x in c.lst("disks", "controllers") if int(x.get("error") or 0) or (x.get("status") or "OK") not in ("OK", "")]
+    if bad_ctrl:
+        c.add(Finding("hw.controller_error", HW, MAJOR, "Contrôleur de stockage en erreur : " + ", ".join(bad_ctrl),
+                      fix="Vérifier le pilote et l'état du contrôleur (outil du constructeur, iDRAC / iLO)."))
+    raid = [g for g in c.events(RAID_PROVIDERS) if int(g.get("level") or 4) <= 3]
+    if raid:
+        n = c.count(raid)
+        errs = [g for g in raid if int(g.get("level") or 4) <= 2]
+        c.add(Finding("hw.raid_events", HW, MAJOR if errs else MINOR,
+                      f"Alertes du contrôleur RAID ou de la supervision matérielle ({n})",
+                      detail="Source(s) : " + ", ".join(sorted({g.get('provider') or '?' for g in raid})) + ".",
+                      evidence=[re.sub(r"\s+", " ", (g.get("message") or ""))[:180] for g in sorted(raid, key=lambda g: -int(g.get("count") or 0))[:3]],
+                      impact="Disque en cours de défaillance, grappe dégradée, batterie de cache, ventilateur ou alimentation en défaut.",
+                      fix="Consulter l'outil du constructeur (iDRAC, iLO, MegaRAID Storage Manager…) et remplacer le composant signalé.",
+                      predictive=True))
+    rs = c.get("system", "ram_slots") or {}
+    if c.is_server and not c.is_vm and rs.get("ecc") == 3:
+        c.add(Finding("hw.no_ecc", HW, MINOR, "Serveur sans mémoire à correction d'erreurs (ECC)",
+                      impact="Une erreur mémoire passe inaperçue et peut corrompre silencieusement des données ou provoquer des plantages.",
+                      fix="Pour un serveur, privilégier un matériel avec mémoire ECC lors du prochain renouvellement."))
+    if not c.is_vm:
+        old = []
+        for d in c.lst("software", "drivers"):
+            if (d.get("class") or "").upper() not in ("SCSIADAPTER", "HDC", "NET"):
+                continue
+            dt = parse_dt(d.get("date"))
+            if dt and (c.now - dt).days > 5 * 365:
+                old.append(f"{d.get('device')} ({d.get('provider')}, {dt:%Y})")
+        if old:
+            c.add(Finding("hw.old_drivers", HW, MINOR, f"Pilotes de stockage ou réseau de plus de 5 ans ({len(old)})",
+                          detail="; ".join(old[:6]),
+                          impact="Pilotes anciens : bugs connus corrigés depuis (déconnexions, lenteurs, écrans bleus).",
+                          fix="Installer les pilotes récents du constructeur de la machine (pack de pilotes ou outil de mise à jour)."))
+
+
+RULES = [disks, crashes, app_crashes, reliability, devices, battery, firmware, storage_advanced, not_checked]

@@ -6,12 +6,12 @@ import logging
 import traceback
 from dataclasses import dataclass, field
 
-from . import rules_hw, rules_sec, rules_sys
+from . import rules_hw, rules_sec, rules_svc, rules_sys
 from .context import Ctx
 from .model import SYS, CRIT, DOMAINS, INFO, MAJOR, MINOR, NOT_CHECKED, OK, Finding, human_bytes, parse_dt
 
 log = logging.getLogger(__name__)
-ALL_RULES = rules_hw.RULES + rules_sys.RULES + rules_sec.RULES
+ALL_RULES = rules_hw.RULES + rules_sys.RULES + rules_sec.RULES + rules_svc.RULES
 
 
 @dataclass

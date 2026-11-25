@@ -52,6 +52,7 @@ win.analyse.client.setCurrentText("Client Test")
 win.analyse.site.setText("Bureau principal")
 win.analyse.notes.setText("Test de recette")
 win.analyse.opt_updates.setChecked(False)
+win.analyse._admin_asked = True      # pas de proposition d'élévation (boîte modale) pendant le test
 done = []
 win.analyse.done.connect(lambda aid: done.append(aid))
 t0 = time.time()

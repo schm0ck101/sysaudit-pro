@@ -18,6 +18,9 @@ SECTION_LABEL = {
     "boot_perf": "Durée de démarrage", "boot_degradation": "Causes de lenteur au démarrage", "password_policy": "Stratégie de mots de passe",
     "dism_health": "Intégrité du magasin de composants Windows", "defender_threats": "Menaces détectées par Defender",
     "smb_server": "Configuration du serveur SMB", "reliability": "Indice de fiabilité", "pending": "Mises à jour disponibles",
+    "wsb": "Sauvegarde Windows Server", "shadows": "Clichés instantanés", "auditpol": "Stratégie d'audit de sécurité",
+    "restore_points": "Points de restauration", "virtual_disks": "Espaces de stockage", "ad": "Annuaire Active Directory",
+    "mp_prefs": "Exclusions de l'antivirus", "psv2": "PowerShell 2.0",
 }
 
 
